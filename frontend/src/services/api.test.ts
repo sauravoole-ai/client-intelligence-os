@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAnalysis } from './api';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => vi.unstubAllGlobals());
 
 describe('createAnalysis', () => {
   it('uses a safe message for validation failures without exposing response content', async () => {
