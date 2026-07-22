@@ -21,3 +21,7 @@ htmlcov/
 *.tmp
 *.temp
 .coverage.*
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
