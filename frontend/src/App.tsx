@@ -7,6 +7,7 @@ import ReviewQueuePage from './routes/ReviewQueuePage';
 import AuditPage from './routes/AuditPage';
 import SettingsPage from './routes/SettingsPage';
 import ClientWorkspacePage from './routes/ClientWorkspacePage';
+import AnalysesPage from './routes/AnalysesPage';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/clients" element={<ClientsPage />} />
         <Route path="/clients/:clientId" element={<ClientWorkspacePage />} />
+        <Route path="/analyses" element={<AnalysesPage />} />
         <Route path="/new-analysis" element={<NewAnalysisPage />} />
         <Route path="/review-queue" element={<ReviewQueuePage />} />
         <Route path="/audit" element={<AuditPage />} />

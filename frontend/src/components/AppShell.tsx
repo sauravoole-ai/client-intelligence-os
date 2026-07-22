@@ -6,6 +6,7 @@ import IntelligenceNavigator from './IntelligenceNavigator';
 const navItems = [
   { to: '/overview', label: 'Overview' },
   { to: '/clients', label: 'Clients' },
+  { to: '/analyses', label: 'Analyses' },
   { to: '/new-analysis', label: 'New Analysis' },
   { to: '/review-queue', label: 'Review Queue' },
   { to: '/audit', label: 'Audit' },
