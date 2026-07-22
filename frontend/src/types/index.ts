@@ -56,6 +56,13 @@ export interface AnalysisResponse {
   fallback_reason?: string | null;
 }
 
+export interface AnalysisListResponse {
+  items: AnalysisResponse[];
+  offset: number;
+  limit: number;
+  returned_count: number;
+}
+
 export interface ClientRecord {
   id: string;
   reference: string;
