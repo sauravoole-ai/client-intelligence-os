@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
     frontend_origin: str = "http://localhost:3000"
+    database_url: str = "sqlite:///./client_intelligence.db"
     ai_provider: str = "openai"
     openai_api_key: str | None = None
     openai_model: str = "gpt-5.6-luna"
