@@ -1,7 +1,13 @@
+from collections.abc import Generator
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.core.config import settings as app_settings
+from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
 from backend.app.schemas.client_intelligence import AnalysisRequest, FindingClassification
 from backend.app.services.evidence_verifier import (
@@ -10,9 +16,6 @@ from backend.app.services.evidence_verifier import (
     validate_required_categories,
 )
 from backend.app.services import intelligence_orchestrator as orchestrator
-
-
-client = TestClient(app)
 
 
 SAMPLE_CONVERSATION = """
@@ -34,14 +37,31 @@ Coach: We need to look at your sleep and stress more carefully.
 """
 
 
-def test_health_endpoint() -> None:
+@pytest.fixture
+def client(tmp_path: Path) -> Generator[TestClient, None, None]:
+    database_path = tmp_path / "api-tests.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, class_=Session)
+
+    def override_session() -> Generator[Session, None, None]:
+        with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+    engine.dispose()
+
+
+def test_health_endpoint(client: TestClient) -> None:
     response = client.get("/api/v1/health")
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
 
-def test_create_analysis() -> None:
+def test_create_analysis(client: TestClient) -> None:
     response = client.post(
         "/api/v1/analyses",
         json={
@@ -62,7 +82,7 @@ def test_create_analysis() -> None:
     assert data["weekly_summary"]["classification"] == "ai_generated_inference"
 
 
-def test_rejects_unrecognised_conversation_format() -> None:
+def test_rejects_unrecognised_conversation_format(client: TestClient) -> None:
     response = client.post(
         "/api/v1/analyses",
         json={
@@ -228,7 +248,10 @@ def test_required_categories_reject_duplicates() -> None:
         validate_required_categories(findings)
 
 
-def test_llm_mode_without_configured_key_returns_http_503(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_mode_without_configured_key_returns_http_503(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(app_settings, "openai_api_key", None, raising=False)
     monkeypatch.setattr(app_settings, "allow_deterministic_fallback", False, raising=False)
 
