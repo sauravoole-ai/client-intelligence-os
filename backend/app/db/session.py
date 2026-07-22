@@ -28,6 +28,12 @@ SessionLocal = sessionmaker(
 )
 
 
+def initialize_database() -> None:
+    import backend.app.models  # noqa: F401
+
+    Base.metadata.create_all(bind=engine)
+
+
 def get_db_session() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:

@@ -1,8 +1,18 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.router import api_router
 from backend.app.core.config import settings
+from backend.app.db import session as database_session
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    database_session.initialize_database()
+    yield
 
 app = FastAPI(
     title=settings.app_name,
@@ -10,6 +20,7 @@ app = FastAPI(
     description=(
         "Evidence-grounded client intelligence and coach operations API."
     ),
+    lifespan=lifespan,
 )
 
 app.add_middleware(
