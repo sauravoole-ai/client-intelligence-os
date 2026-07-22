@@ -1,3 +1,4 @@
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -7,6 +8,9 @@ from backend.app.schemas.client_intelligence import AnalysisResponse
 
 class AnalysisPersistenceError(RuntimeError):
     pass
+
+
+RETRIEVAL_ERROR_MESSAGE = "The analysis records could not be retrieved."
 
 
 def create_analysis_record(
@@ -39,3 +43,39 @@ def create_analysis_record(
         ) from error
 
     return record
+
+
+def get_analysis_record(
+    session: Session,
+    analysis_id: str,
+) -> AnalysisRecord | None:
+    try:
+        return session.get(AnalysisRecord, analysis_id)
+    except SQLAlchemyError as error:
+        session.rollback()
+        raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
+
+
+def list_analysis_records(
+    session: Session,
+    *,
+    offset: int = 0,
+    limit: int = 20,
+) -> list[AnalysisRecord]:
+    if offset < 0:
+        raise ValueError("offset must be zero or greater")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+
+    statement = (
+        select(AnalysisRecord)
+        .order_by(AnalysisRecord.created_at.desc(), AnalysisRecord.id.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+
+    try:
+        return list(session.scalars(statement).all())
+    except SQLAlchemyError as error:
+        session.rollback()
+        raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
