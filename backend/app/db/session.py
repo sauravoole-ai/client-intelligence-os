@@ -2,13 +2,10 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine, make_url
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.core.config import settings
-
-
-class Base(DeclarativeBase):
-    pass
+from backend.app.db.base import Base
 
 
 def create_database_engine(database_url: str) -> Engine:

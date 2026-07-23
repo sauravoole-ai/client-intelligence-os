@@ -6,3 +6,4 @@ pytest
 httpx
 openai>=2.0,<3
 SQLAlchemy>=2.0,<3.0
+alembic>=1.14,<2.0
