@@ -1,9 +1,10 @@
 from datetime import datetime
 from enum import Enum
 from typing import Literal
+import unicodedata
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class FindingClassification(str, Enum):
@@ -103,3 +104,53 @@ class AnalysisListResponse(BaseModel):
     offset: int
     limit: int
     returned_count: int
+
+
+AnalysisReviewState = Literal[
+    "pending_review",
+    "approved",
+    "changes_requested",
+]
+AnalysisReviewDecision = Literal["approved", "changes_requested"]
+
+
+class AnalysisReviewRequest(BaseModel):
+    review_status: AnalysisReviewDecision
+    review_note: str | None = Field(default=None, max_length=2000)
+    expected_version: int = Field(ge=1)
+
+    @field_validator("review_note")
+    @classmethod
+    def normalize_review_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        normalized = value.strip()
+        if any(
+            unicodedata.category(character) == "Cc"
+            and character not in "\n\r\t"
+            for character in normalized
+        ):
+            raise ValueError("review_note contains disallowed control characters")
+        return normalized or None
+
+    @model_validator(mode="after")
+    def require_changes_requested_note(self) -> "AnalysisReviewRequest":
+        if self.review_status == "changes_requested" and self.review_note is None:
+            raise ValueError("A review note is required when requesting changes.")
+        return self
+
+
+class AnalysisReviewResponse(BaseModel):
+    analysis_id: UUID
+    review_status: AnalysisReviewState
+    review_note: str | None
+    reviewed_at: datetime | None
+    review_version: int
+
+
+class PersistedAnalysisResponse(AnalysisResponse):
+    review_status: AnalysisReviewState
+    review_note: str | None
+    reviewed_at: datetime | None
+    review_version: int

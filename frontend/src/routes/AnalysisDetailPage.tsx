@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { getAnalysis } from '../services/api';
+import {
+  AnalysisReviewConflictError,
+  getAnalysis,
+  updateAnalysisReview,
+} from '../services/api';
 import type {
-  AnalysisResponse,
+  AnalysisReviewDecision,
   CoachAction,
   EvidenceReference,
   Finding,
+  PersistedAnalysisResponse,
   RiskFlag,
 } from '../types';
 
@@ -140,7 +145,7 @@ function RecommendedActionCard({ action }: { action: CoachAction }) {
   );
 }
 
-function AnalysisMetadata({ analysis }: { analysis: AnalysisResponse }) {
+function AnalysisMetadata({ analysis }: { analysis: PersistedAnalysisResponse }) {
   return (
     <section className="analysis-metadata panel" aria-label="Analysis metadata">
       <div className="analysis-metadata__primary">
@@ -164,6 +169,131 @@ function AnalysisMetadata({ analysis }: { analysis: AnalysisResponse }) {
         <div><dt>Prompt version</dt><dd>{analysis.prompt_version}</dd></div>
         <div><dt>Analysis ID</dt><dd className="analysis-id">{analysis.analysis_id}</dd></div>
       </dl>
+    </section>
+  );
+}
+
+function ReviewPanel({
+  analysis,
+  note,
+  onNoteChange,
+  onDecision,
+  onReload,
+  busy,
+  feedback,
+  validationMessage,
+}: {
+  analysis: PersistedAnalysisResponse;
+  note: string;
+  onNoteChange: (value: string) => void;
+  onDecision: (decision: AnalysisReviewDecision) => void;
+  onReload: () => void;
+  busy: boolean;
+  feedback: { kind: 'success' | 'error' | 'conflict'; message: string } | null;
+  validationMessage: string | null;
+}) {
+  const statusClass = analysis.review_status === 'approved'
+    ? 'badge badge--positive'
+    : analysis.review_status === 'changes_requested'
+      ? 'badge badge--warning'
+      : 'badge';
+
+  return (
+    <section
+      className="analysis-review panel"
+      aria-labelledby="analysis-review-title"
+      aria-busy={busy}
+    >
+      <div className="analysis-review__header">
+        <div>
+          <div className="eyebrow">Human review</div>
+          <h2 id="analysis-review-title">Review this saved analysis</h2>
+          <p>Record an analysis-level decision. No external action is triggered.</p>
+        </div>
+        <span className={statusClass}>
+          Current status: {readableLabel(analysis.review_status)}
+        </span>
+      </div>
+
+      <dl className="analysis-review__metadata">
+        <div>
+          <dt>Saved review note</dt>
+          <dd>{analysis.review_note || 'No review note saved.'}</dd>
+        </div>
+        <div>
+          <dt>Reviewed</dt>
+          <dd>
+            {analysis.reviewed_at
+              ? <time dateTime={analysis.reviewed_at}>{formatCreatedAt(analysis.reviewed_at)}</time>
+              : 'Not reviewed yet'}
+          </dd>
+        </div>
+        <div>
+          <dt>Review version</dt>
+          <dd>{analysis.review_version}</dd>
+        </div>
+      </dl>
+
+      <label className="field-stack" htmlFor="analysis-review-note">
+        Review note <span className="form-hint">Optional for approval; required when requesting changes.</span>
+        <textarea
+          id="analysis-review-note"
+          value={note}
+          maxLength={2000}
+          rows={4}
+          disabled={busy}
+          onChange={(event) => onNoteChange(event.target.value)}
+        />
+      </label>
+      {validationMessage && (
+        <p className="analysis-review__feedback analysis-review__feedback--error" role="alert">
+          {validationMessage}
+        </p>
+      )}
+
+      <div className="toolbar analysis-review__actions">
+        <button
+          className="primary"
+          type="button"
+          disabled={busy}
+          onClick={() => onDecision('approved')}
+        >
+          Approve analysis
+        </button>
+        <button
+          className="secondary analysis-review__changes-button"
+          type="button"
+          disabled={busy}
+          onClick={() => onDecision('changes_requested')}
+        >
+          Request changes
+        </button>
+      </div>
+
+      {busy && (
+        <p className="loading-state" role="status" aria-live="polite">
+          <span className="signal-pulse" aria-hidden="true" />
+          Saving review
+        </p>
+      )}
+      {feedback?.kind === 'success' && (
+        <p className="analysis-review__feedback analysis-review__feedback--success" role="status" aria-live="polite">
+          {feedback.message}
+        </p>
+      )}
+      {feedback?.kind === 'error' && (
+        <p className="analysis-review__feedback analysis-review__feedback--error" role="alert">
+          {feedback.message}
+        </p>
+      )}
+      {feedback?.kind === 'conflict' && (
+        <div className="analysis-review__feedback analysis-review__feedback--error" role="alert">
+          <p>{feedback.message}</p>
+          <button className="secondary" type="button" disabled={busy} onClick={onReload}>
+            Reload saved analysis
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -247,8 +377,16 @@ function AnalysisSection({
 function AnalysisDetailPage() {
   const { analysisId } = useParams();
   const [status, setStatus] = useState<'loading' | 'success' | 'not-found' | 'error' | 'invalid'>('loading');
-  const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
+  const [analysis, setAnalysis] = useState<PersistedAnalysisResponse | null>(null);
   const [requestVersion, setRequestVersion] = useState(0);
+  const [reviewNote, setReviewNote] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewFeedback, setReviewFeedback] = useState<{
+    kind: 'success' | 'error' | 'conflict';
+    message: string;
+  } | null>(null);
+  const [reviewValidation, setReviewValidation] = useState<string | null>(null);
+  const reviewLock = useRef(false);
 
   useEffect(() => {
     if (!analysisId || !UUID_PATTERN.test(analysisId)) {
@@ -263,6 +401,9 @@ function AnalysisDetailPage() {
       .then((response) => {
         if (!active) return;
         setAnalysis(response);
+        setReviewNote(response.review_note || '');
+        setReviewFeedback(null);
+        setReviewValidation(null);
         setStatus('success');
       })
       .catch((error: unknown) => {
@@ -278,6 +419,71 @@ function AnalysisDetailPage() {
 
   const retry = () => setRequestVersion((version) => version + 1);
 
+  const submitReview = async (decision: AnalysisReviewDecision) => {
+    if (!analysisId || !analysis || reviewLock.current) return;
+    const normalizedNote = reviewNote.trim();
+    if (decision === 'changes_requested' && !normalizedNote) {
+      setReviewValidation('Add a meaningful review note before requesting changes.');
+      return;
+    }
+
+    reviewLock.current = true;
+    setReviewBusy(true);
+    setReviewValidation(null);
+    setReviewFeedback(null);
+    try {
+      const response = await updateAnalysisReview(analysisId, {
+        review_status: decision,
+        review_note: normalizedNote || null,
+        expected_version: analysis.review_version,
+      });
+      setAnalysis((current) => current ? { ...current, ...response } : current);
+      setReviewNote(response.review_note || '');
+      setReviewFeedback({
+        kind: 'success',
+        message: decision === 'approved'
+          ? 'Analysis review saved as approved.'
+          : 'Analysis review saved with changes requested.',
+      });
+    } catch (error) {
+      if (error instanceof AnalysisReviewConflictError) {
+        setReviewFeedback({
+          kind: 'conflict',
+          message: 'This saved analysis was changed elsewhere. Reload the saved analysis before reviewing again.',
+        });
+      } else {
+        setReviewFeedback({
+          kind: 'error',
+          message: 'The review could not be saved. Please try again.',
+        });
+      }
+    } finally {
+      reviewLock.current = false;
+      setReviewBusy(false);
+    }
+  };
+
+  const reloadAfterConflict = async () => {
+    if (!analysisId || reviewLock.current) return;
+    reviewLock.current = true;
+    setReviewBusy(true);
+    try {
+      const response = await getAnalysis(analysisId);
+      setAnalysis(response);
+      setReviewNote(response.review_note || '');
+      setReviewFeedback(null);
+      setReviewValidation(null);
+    } catch {
+      setReviewFeedback({
+        kind: 'error',
+        message: 'The latest saved analysis could not be loaded. Please try again.',
+      });
+    } finally {
+      reviewLock.current = false;
+      setReviewBusy(false);
+    }
+  };
+
   if (status === 'loading') return <AnalysisDetailSkeleton />;
   if (status === 'not-found' || status === 'error' || status === 'invalid') {
     return <AnalysisDetailErrorState kind={status} onRetry={retry} />;
@@ -291,6 +497,20 @@ function AnalysisDetailPage() {
       </nav>
 
       <AnalysisMetadata analysis={analysis} />
+
+      <ReviewPanel
+        analysis={analysis}
+        note={reviewNote}
+        onNoteChange={(value) => {
+          setReviewNote(value);
+          setReviewValidation(null);
+        }}
+        onDecision={submitReview}
+        onReload={reloadAfterConflict}
+        busy={reviewBusy}
+        feedback={reviewFeedback}
+        validationMessage={reviewValidation}
+      />
 
       <AnalysisSection title="Weekly summary" description="The stored synthesis for this analysis period.">
         <FindingCard finding={analysis.weekly_summary} summary />
