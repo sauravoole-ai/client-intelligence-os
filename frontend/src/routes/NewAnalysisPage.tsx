@@ -1,4 +1,5 @@
 import { FormEvent, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { createAnalysis } from '../services/api';
 import type { AnalysisResponse } from '../types';
 
@@ -19,6 +20,7 @@ function NewAnalysisPage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (status === 'loading') return;
     setStatus('loading');
     setErrorMessage('');
     try {
@@ -37,6 +39,7 @@ function NewAnalysisPage() {
   };
 
   const canSubmit = form.conversation.trim().length >= 20 && status !== 'loading';
+  const isSubmitting = status === 'loading';
 
   return (
     <div className="page">
@@ -51,21 +54,21 @@ function NewAnalysisPage() {
         <form className="card stack" onSubmit={handleSubmit}>
           <label className="stack">
             <span style={{ fontWeight: 600 }}>Anonymised client reference</span>
-            <input value={form.client_reference} onChange={(event) => setForm({ ...form, client_reference: event.target.value })} placeholder="ANON-004" />
+            <input disabled={isSubmitting} value={form.client_reference} onChange={(event) => setForm({ ...form, client_reference: event.target.value })} placeholder="ANON-004" />
           </label>
           <label className="stack">
             <span style={{ fontWeight: 600 }}>Analysis period</span>
-            <input value={form.analysis_period} onChange={(event) => setForm({ ...form, analysis_period: event.target.value })} placeholder="Week 13" />
+            <input disabled={isSubmitting} value={form.analysis_period} onChange={(event) => setForm({ ...form, analysis_period: event.target.value })} placeholder="Week 13" />
           </label>
           <label className="stack">
             <span style={{ fontWeight: 600 }}>Conversation text</span>
-            <textarea required minLength={20} value={form.conversation} onChange={(event) => setForm({ ...form, conversation: event.target.value })} rows={10} placeholder="Day 1
+            <textarea disabled={isSubmitting} required minLength={20} value={form.conversation} onChange={(event) => setForm({ ...form, conversation: event.target.value })} rows={10} placeholder="Day 1
 Client: ...
 Coach: ..." />
           </label>
           <div className="stack">
             <span style={{ fontWeight: 600 }}>Engine mode</span>
-            <select value={form.engine_mode} onChange={(event) => setForm({ ...form, engine_mode: event.target.value as 'auto' | 'llm' | 'deterministic' })}>
+            <select disabled={isSubmitting} value={form.engine_mode} onChange={(event) => setForm({ ...form, engine_mode: event.target.value as 'auto' | 'llm' | 'deterministic' })}>
               <option value="auto">Auto (uses deterministic fallback when needed)</option>
               <option value="deterministic">Deterministic</option>
               <option value="llm">LLM</option>
@@ -87,6 +90,10 @@ Coach: ..." />
               <div><strong>Engine:</strong> {result.engine}</div>
               <div><strong>Fallback:</strong> {result.fallback_reason || 'None'}</div>
               <div><strong>Findings:</strong> {result.findings.length}</div>
+              <div className="toolbar">
+                <Link className="primary inline-link" to={`/analyses/${result.analysis_id}`}>Open saved analysis</Link>
+                <Link className="chip inline-link" to="/analyses">View all analyses</Link>
+              </div>
             </div>
           ) : status === 'error' ? (
             <div className="stack">
