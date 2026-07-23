@@ -78,6 +78,7 @@ function isCoachAction(value: unknown): value is CoachAction {
     && typeof value.priority === 'number'
     && typeof value.action === 'string'
     && typeof value.rationale === 'string'
+    && typeof value.classification === 'string'
     && isStringArray(value.linked_finding_ids)
     && Array.isArray(value.evidence)
     && value.evidence.every(isEvidenceReference)

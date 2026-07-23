@@ -41,6 +41,7 @@ const analysisResponse: AnalysisResponse = {
     priority: 1,
     action: 'Follow up.',
     rationale: 'Fatigue was reported.',
+    classification: 'ai_generated_inference',
     linked_finding_ids: ['finding-1'],
     evidence: [],
     review_status: 'pending',

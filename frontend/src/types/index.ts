@@ -34,6 +34,7 @@ export interface CoachAction {
   priority: number;
   action: string;
   rationale: string;
+  classification: string;
   linked_finding_ids: string[];
   evidence: EvidenceReference[];
   review_status: ReviewStatus;

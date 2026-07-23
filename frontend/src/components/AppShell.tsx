@@ -51,6 +51,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
   const activeLabel = useMemo(() => {
     if (location.pathname.startsWith('/clients')) return 'Clients';
+    if (location.pathname.startsWith('/analyses')) return 'Analyses';
     const active = navItems.find((item) => item.to === location.pathname);
     return active?.label ?? 'Workspace';
   }, [location.pathname]);
