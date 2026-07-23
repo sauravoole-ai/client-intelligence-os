@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AnalysisListResponse, AnalysisResponse } from '../types';
-import { createAnalysis, getAnalysis, listAnalyses } from './api';
+import type {
+  AnalysisListResponse,
+  AnalysisResponse,
+  AnalysisReviewResponse,
+  PersistedAnalysisResponse,
+} from '../types';
+import {
+  AnalysisReviewConflictError,
+  createAnalysis,
+  getAnalysis,
+  listAnalyses,
+  updateAnalysisReview,
+} from './api';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -53,6 +64,22 @@ const analysisResponse: AnalysisResponse = {
   fallback_reason: null,
 };
 
+const persistedAnalysisResponse: PersistedAnalysisResponse = {
+  ...analysisResponse,
+  review_status: 'pending_review',
+  review_note: null,
+  reviewed_at: null,
+  review_version: 1,
+};
+
+const reviewResponse: AnalysisReviewResponse = {
+  analysis_id: analysisResponse.analysis_id,
+  review_status: 'approved',
+  review_note: 'Reviewed.',
+  reviewed_at: '2026-01-02T00:00:00Z',
+  review_version: 2,
+};
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
     status,
@@ -83,13 +110,13 @@ describe('createAnalysis', () => {
 
 describe('getAnalysis', () => {
   it('retrieves and validates an analysis', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(analysisResponse)));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(persistedAnalysisResponse)));
 
-    await expect(getAnalysis(analysisResponse.analysis_id)).resolves.toEqual(analysisResponse);
+    await expect(getAnalysis(analysisResponse.analysis_id)).resolves.toEqual(persistedAnalysisResponse);
   });
 
   it('encodes the analysis ID in the request path', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(analysisResponse));
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(persistedAnalysisResponse));
     vi.stubGlobal('fetch', fetchMock);
 
     await getAnalysis('analysis/id with spaces');
@@ -108,7 +135,22 @@ describe('getAnalysis', () => {
   });
 
   it('rejects a malformed detail response', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...analysisResponse, findings: [{}] })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...persistedAnalysisResponse, findings: [{}] })));
+
+    await expect(getAnalysis(analysisResponse.analysis_id)).rejects.toThrow('invalid response');
+  });
+
+  it.each([
+    ['review_status', undefined],
+    ['review_status', 'unknown'],
+    ['review_note', 42],
+    ['reviewed_at', 42],
+    ['review_version', 0],
+  ])('rejects malformed persisted review field %s', async (field, value) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      ...persistedAnalysisResponse,
+      [field]: value,
+    })));
 
     await expect(getAnalysis(analysisResponse.analysis_id)).rejects.toThrow('invalid response');
   });
@@ -131,6 +173,123 @@ describe('getAnalysis', () => {
 
     await expect(getAnalysis(analysisResponse.analysis_id)).rejects.toThrow('currently unavailable');
     await expect(getAnalysis(analysisResponse.analysis_id)).rejects.not.toThrow('raw database detail');
+  });
+});
+
+describe('updateAnalysisReview', () => {
+  it('uses PUT, encodes the ID, and sends a normalized request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(reviewResponse));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateAnalysisReview('analysis/id with spaces', {
+      review_status: 'approved',
+      review_note: '  Reviewed.  ',
+      expected_version: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/analyses/analysis%2Fid%20with%20spaces/review',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          review_status: 'approved',
+          review_note: 'Reviewed.',
+          expected_version: 1,
+        }),
+      }),
+    );
+  });
+
+  it('parses a complete valid mutation response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(reviewResponse)));
+
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).resolves.toEqual(reviewResponse);
+  });
+
+  it.each([
+    ['analysis_id', undefined],
+    ['review_status', 'unknown'],
+    ['review_note', 42],
+    ['reviewed_at', 42],
+    ['review_version', 0],
+  ])('rejects malformed mutation field %s', async (field, value) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      ...reviewResponse,
+      [field]: value,
+    })));
+
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).rejects.toThrow('invalid response');
+  });
+
+  it.each([
+    [404, 'not found'],
+    [422, 'could not be validated'],
+    [503, 'currently unavailable'],
+    [500, 'unexpected error'],
+  ])('uses a safe message for HTTP %s', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private server detail', { status })));
+
+    const request = updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    });
+    await expect(request).rejects.toThrow(message);
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).rejects.not.toThrow('private server detail');
+  });
+
+  it('exposes a typed sanitized conflict', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private conflict detail', { status: 409 })));
+
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).rejects.toBeInstanceOf(AnalysisReviewConflictError);
+  });
+
+  it('handles timeout without exposing internals', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((...[, init]: Parameters<typeof fetch>) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('private abort', 'AbortError')));
+    })));
+
+    const request = expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    }, 10)).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(10);
+
+    await request;
+  });
+
+  it('sanitizes network failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network detail')));
+
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).rejects.toThrow('Unable to reach');
+    await expect(updateAnalysisReview(analysisResponse.analysis_id, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    })).rejects.not.toThrow('private network detail');
   });
 });
 

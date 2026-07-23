@@ -1,9 +1,12 @@
 import type {
   AnalysisListResponse,
   AnalysisResponse,
+  AnalysisReviewRequest,
+  AnalysisReviewResponse,
   CoachAction,
   EvidenceReference,
   Finding,
+  PersistedAnalysisResponse,
   RiskFlag,
 } from '../types';
 
@@ -36,6 +39,12 @@ function isReviewStatus(value: unknown) {
     || value === 'approved'
     || value === 'edited'
     || value === 'rejected';
+}
+
+function isAnalysisReviewStatus(value: unknown) {
+  return value === 'pending_review'
+    || value === 'approved'
+    || value === 'changes_requested';
 }
 
 function isEvidenceReference(value: unknown): value is EvidenceReference {
@@ -126,6 +135,37 @@ function isAnalysisListResponse(value: unknown): value is AnalysisListResponse {
     && value.returned_count === value.items.length;
 }
 
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isAnalysisReviewResponse(value: unknown): value is AnalysisReviewResponse {
+  return isRecord(value)
+    && typeof value.analysis_id === 'string'
+    && isAnalysisReviewStatus(value.review_status)
+    && isNullableString(value.review_note)
+    && isNullableString(value.reviewed_at)
+    && Number.isInteger(value.review_version)
+    && typeof value.review_version === 'number'
+    && value.review_version >= 1;
+}
+
+function isPersistedAnalysisResponse(
+  value: unknown,
+): value is PersistedAnalysisResponse {
+  return isAnalysisResponse(value)
+    && isAnalysisReviewResponse(value);
+}
+
+class ReviewApiError extends Error {}
+
+export class AnalysisReviewConflictError extends Error {
+  constructor() {
+    super('This saved analysis was changed elsewhere. Reload it before reviewing again.');
+    this.name = 'AnalysisReviewConflictError';
+  }
+}
+
 export async function createAnalysis(payload: CreateAnalysisPayload, timeoutMs = 15_000): Promise<AnalysisResponse> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -161,7 +201,7 @@ export async function createAnalysis(payload: CreateAnalysisPayload, timeoutMs =
 export async function getAnalysis(
   analysisId: string,
   timeoutMs = 15_000,
-): Promise<AnalysisResponse> {
+): Promise<PersistedAnalysisResponse> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -178,7 +218,7 @@ export async function getAnalysis(
     }
 
     const data: unknown = await response.json();
-    if (!isAnalysisResponse(data)) {
+    if (!isPersistedAnalysisResponse(data)) {
       throw new Error('The analysis service returned an invalid response.');
     }
     return data;
@@ -191,6 +231,67 @@ export async function getAnalysis(
     }
     if (error instanceof Error) throw error;
     throw new Error('Unable to reach the analysis service.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export async function updateAnalysisReview(
+  analysisId: string,
+  request: AnalysisReviewRequest,
+  timeoutMs = 15_000,
+): Promise<AnalysisReviewResponse> {
+  const normalizedNote = request.review_note?.trim() || null;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/analyses/${encodeURIComponent(analysisId)}/review`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...request,
+          review_note: normalizedNote,
+        }),
+        signal: controller.signal,
+      },
+    );
+
+    if (!response.ok) {
+      if (response.status === 409) throw new AnalysisReviewConflictError();
+      if (response.status === 404) {
+        throw new ReviewApiError('The requested analysis was not found.');
+      }
+      if (response.status === 422) {
+        throw new ReviewApiError('The review request could not be validated.');
+      }
+      if (response.status === 503) {
+        throw new ReviewApiError('The analysis review service is currently unavailable.');
+      }
+      throw new ReviewApiError('The server returned an unexpected error.');
+    }
+
+    const data: unknown = await response.json();
+    if (!isAnalysisReviewResponse(data)) {
+      throw new ReviewApiError('The analysis service returned an invalid response.');
+    }
+    return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('The analysis review request timed out. Please retry.');
+    }
+    if (error instanceof SyntaxError) {
+      throw new Error('The analysis service returned an invalid response.');
+    }
+    if (
+      error instanceof ReviewApiError
+      || error instanceof AnalysisReviewConflictError
+    ) {
+      throw error;
+    }
+    throw new Error('Unable to reach the analysis review service.');
   } finally {
     window.clearTimeout(timeout);
   }

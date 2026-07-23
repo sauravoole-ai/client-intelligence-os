@@ -64,6 +64,37 @@ export interface AnalysisListResponse {
   returned_count: number;
 }
 
+export type AnalysisReviewStatus =
+  | 'pending_review'
+  | 'approved'
+  | 'changes_requested';
+
+export type AnalysisReviewDecision = Exclude<
+  AnalysisReviewStatus,
+  'pending_review'
+>;
+
+export interface AnalysisReviewRequest {
+  review_status: AnalysisReviewDecision;
+  review_note: string | null;
+  expected_version: number;
+}
+
+export interface AnalysisReviewResponse {
+  analysis_id: string;
+  review_status: AnalysisReviewStatus;
+  review_note: string | null;
+  reviewed_at: string | null;
+  review_version: number;
+}
+
+export interface PersistedAnalysisResponse extends AnalysisResponse {
+  review_status: AnalysisReviewStatus;
+  review_note: string | null;
+  reviewed_at: string | null;
+  review_version: number;
+}
+
 export interface ClientRecord {
   id: string;
   reference: string;

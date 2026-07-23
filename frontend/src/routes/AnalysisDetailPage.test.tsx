@@ -2,15 +2,25 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getAnalysis } from '../services/api';
-import type { AnalysisResponse } from '../types';
+import {
+  AnalysisReviewConflictError,
+  getAnalysis,
+  updateAnalysisReview,
+} from '../services/api';
+import type { PersistedAnalysisResponse } from '../types';
 import AnalysisDetailPage from './AnalysisDetailPage';
 
-vi.mock('../services/api', () => ({
-  getAnalysis: vi.fn(),
-}));
+vi.mock('../services/api', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../services/api')>();
+  return {
+    ...original,
+    getAnalysis: vi.fn(),
+    updateAnalysisReview: vi.fn(),
+  };
+});
 
 const mockedGetAnalysis = vi.mocked(getAnalysis);
+const mockedUpdateAnalysisReview = vi.mocked(updateAnalysisReview);
 const analysisId = '00000000-0000-4000-8000-000000000001';
 
 const evidence = {
@@ -31,7 +41,7 @@ const finding = {
   review_status: 'pending' as const,
 };
 
-const analysis: AnalysisResponse = {
+const analysis: PersistedAnalysisResponse = {
   analysis_id: analysisId,
   status: 'completed',
   created_at: '2026-01-01T10:30:00Z',
@@ -70,6 +80,10 @@ const analysis: AnalysisResponse = {
   prompt_version: 'deterministic-baseline-v1',
   validation_warnings: ['Human review is required.'],
   fallback_reason: 'llm_not_configured',
+  review_status: 'pending_review',
+  review_note: null,
+  reviewed_at: null,
+  review_version: 1,
 };
 
 function renderDetail(path = `/analyses/${analysisId}`) {
@@ -100,6 +114,44 @@ describe('AnalysisDetailPage', () => {
 
     expect(await screen.findByText('deterministic_evidence_baseline_v1')).toBeInTheDocument();
     expect(screen.getByText(analysisId)).toBeInTheDocument();
+  });
+
+  it('renders the current pending review state', async () => {
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    renderDetail();
+
+    expect(await screen.findByText('Current status: pending review')).toBeInTheDocument();
+    expect(screen.getByText('No review note saved.')).toBeInTheDocument();
+    expect(screen.getByText('Not reviewed yet')).toBeInTheDocument();
+  });
+
+  it('renders approved state, note, timestamp, and version', async () => {
+    mockedGetAnalysis.mockResolvedValue({
+      ...analysis,
+      review_status: 'approved',
+      review_note: 'Reviewed carefully.',
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+    renderDetail();
+
+    expect(await screen.findByText('Current status: approved')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Reviewed carefully.')).toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.getAllByText('Reviewed carefully.').some((item) => item.closest('dd'))).toBe(true);
+  });
+
+  it('renders changes-requested status textually', async () => {
+    mockedGetAnalysis.mockResolvedValue({
+      ...analysis,
+      review_status: 'changes_requested',
+      review_note: 'Add more evidence.',
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+    renderDetail();
+
+    expect(await screen.findByText('Current status: changes requested')).toBeInTheDocument();
   });
 
   it('renders the client reference', async () => {
@@ -234,7 +286,7 @@ describe('AnalysisDetailPage', () => {
     mockedGetAnalysis.mockResolvedValue({
       ...analysis,
       conversation: 'PRIVATE ORIGINAL CONVERSATION',
-    } as AnalysisResponse);
+    } as PersistedAnalysisResponse);
     renderDetail();
 
     await screen.findByRole('heading', { name: 'ANON-001' });
@@ -246,5 +298,191 @@ describe('AnalysisDetailPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Invalid analysis link' })).toBeInTheDocument();
     expect(mockedGetAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('approves without a note using the current version', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockResolvedValue({
+      analysis_id: analysisId,
+      review_status: 'approved',
+      review_note: null,
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Approve analysis' }));
+
+    expect(mockedUpdateAnalysisReview).toHaveBeenCalledWith(analysisId, {
+      review_status: 'approved',
+      review_note: null,
+      expected_version: 1,
+    });
+  });
+
+  it('sends trimmed optional approval note', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockResolvedValue({
+      analysis_id: analysisId,
+      review_status: 'approved',
+      review_note: 'Looks good.',
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+    renderDetail();
+
+    const note = await screen.findByLabelText(/Review note/i);
+    await user.type(note, '  Looks good.  ');
+    await user.click(screen.getByRole('button', { name: 'Approve analysis' }));
+
+    expect(mockedUpdateAnalysisReview).toHaveBeenCalledWith(
+      analysisId,
+      expect.objectContaining({ review_note: 'Looks good.' }),
+    );
+  });
+
+  it('sends a valid trimmed changes-requested note', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockResolvedValue({
+      analysis_id: analysisId,
+      review_status: 'changes_requested',
+      review_note: 'Add evidence.',
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+    renderDetail();
+
+    await user.type(await screen.findByLabelText(/Review note/i), '  Add evidence.  ');
+    await user.click(screen.getByRole('button', { name: 'Request changes' }));
+
+    expect(mockedUpdateAnalysisReview).toHaveBeenCalledWith(analysisId, {
+      review_status: 'changes_requested',
+      review_note: 'Add evidence.',
+      expected_version: 1,
+    });
+  });
+
+  it('blocks empty changes-requested note locally', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Request changes' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('meaningful review note');
+    expect(mockedUpdateAnalysisReview).not.toHaveBeenCalled();
+  });
+
+  it('disables controls and blocks repeats while mutation is pending', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockReturnValue(new Promise(() => {}));
+    renderDetail();
+
+    const approve = await screen.findByRole('button', { name: 'Approve analysis' });
+    await user.dblClick(approve);
+
+    expect(mockedUpdateAnalysisReview).toHaveBeenCalledTimes(1);
+    expect(approve).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Request changes' })).toBeDisabled();
+    expect(screen.getByLabelText(/Review note/i)).toBeDisabled();
+    expect(screen.getByText('Saving review').closest('[role="status"]')).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('updates saved review state only after server success and announces it', async () => {
+    const user = userEvent.setup();
+    let resolveReview!: (value: {
+      analysis_id: string;
+      review_status: 'approved';
+      review_note: string;
+      reviewed_at: string;
+      review_version: number;
+    }) => void;
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockReturnValue(new Promise((resolve) => {
+      resolveReview = resolve;
+    }));
+    renderDetail();
+
+    await user.type(await screen.findByLabelText(/Review note/i), 'Approved note');
+    await user.click(screen.getByRole('button', { name: 'Approve analysis' }));
+    expect(screen.getByText('Current status: pending review')).toBeInTheDocument();
+
+    resolveReview({
+      analysis_id: analysisId,
+      review_status: 'approved',
+      review_note: 'Approved note',
+      reviewed_at: '2026-01-02T12:00:00Z',
+      review_version: 2,
+    });
+
+    expect(await screen.findByText('Current status: approved')).toBeInTheDocument();
+    expect(screen.getByText('Analysis review saved as approved.')).toHaveAttribute('role', 'status');
+    expect(screen.getByDisplayValue('Approved note')).toBeInTheDocument();
+  });
+
+  it('retains saved state and sanitizes normal mutation errors', async () => {
+    const user = userEvent.setup();
+    mockedGetAnalysis.mockResolvedValue(analysis);
+    mockedUpdateAnalysisReview.mockRejectedValue(new Error('raw server detail'));
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Approve analysis' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be saved');
+    expect(screen.getByText('Current status: pending review')).toBeInTheDocument();
+    expect(screen.queryByText('raw server detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve analysis' })).toBeEnabled();
+  });
+
+  it('shows conflict guidance and reloads current review state', async () => {
+    const user = userEvent.setup();
+    const refreshed = {
+      ...analysis,
+      review_status: 'changes_requested' as const,
+      review_note: 'Current saved note.',
+      reviewed_at: '2026-01-03T12:00:00Z',
+      review_version: 3,
+    };
+    mockedGetAnalysis
+      .mockResolvedValueOnce(analysis)
+      .mockResolvedValueOnce(refreshed);
+    mockedUpdateAnalysisReview.mockRejectedValue(new AnalysisReviewConflictError());
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Approve analysis' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('changed elsewhere');
+
+    await user.click(screen.getByRole('button', { name: 'Reload saved analysis' }));
+
+    expect(mockedGetAnalysis).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText('Current status: changes requested')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('Current saved note.')).toBeInTheDocument();
+    expect(screen.queryByText('changed elsewhere')).not.toBeInTheDocument();
+  });
+
+  it('disables review controls during conflict reload', async () => {
+    const user = userEvent.setup();
+    let resolveReload!: (value: PersistedAnalysisResponse) => void;
+    mockedGetAnalysis
+      .mockResolvedValueOnce(analysis)
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveReload = resolve;
+      }));
+    mockedUpdateAnalysisReview.mockRejectedValue(new AnalysisReviewConflictError());
+    renderDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Approve analysis' }));
+    await user.click(await screen.findByRole('button', { name: 'Reload saved analysis' }));
+
+    expect(screen.getByRole('button', { name: 'Approve analysis' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Request changes' })).toBeDisabled();
+    expect(screen.getByLabelText(/Review note/i)).toBeDisabled();
+
+    resolveReload(analysis);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve analysis' })).toBeEnabled());
   });
 });
