@@ -34,6 +34,7 @@ export interface CoachAction {
   priority: number;
   action: string;
   rationale: string;
+  classification: string;
   linked_finding_ids: string[];
   evidence: EvidenceReference[];
   review_status: ReviewStatus;
@@ -54,6 +55,13 @@ export interface AnalysisResponse {
   prompt_version: string;
   validation_warnings: string[];
   fallback_reason?: string | null;
+}
+
+export interface AnalysisListResponse {
+  items: AnalysisResponse[];
+  offset: number;
+  limit: number;
+  returned_count: number;
 }
 
 export interface ClientRecord {

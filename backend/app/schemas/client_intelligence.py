@@ -96,3 +96,10 @@ class AnalysisResponse(BaseModel):
     prompt_version: str = "deterministic-baseline-v1"
     validation_warnings: list[str] = Field(default_factory=list)
     fallback_reason: str | None = None
+
+
+class AnalysisListResponse(BaseModel):
+    items: list[AnalysisResponse]
+    offset: int
+    limit: int
+    returned_count: int

@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,6 +14,8 @@ from backend.app.models.analysis import AnalysisRecord
 from backend.app.repositories.analysis_repository import (
     AnalysisPersistenceError,
     create_analysis_record,
+    get_analysis_record,
+    list_analysis_records,
 )
 from backend.app.schemas.client_intelligence import AnalysisRequest, AnalysisResponse
 from backend.app.services.analysis_service import analyse_conversation
@@ -52,6 +55,21 @@ def make_analysis() -> AnalysisResponse:
             client_reference="ANON-PERSIST-001",
             engine_mode="deterministic",
         )
+    )
+
+
+def make_record(record_id: str, created_at: datetime) -> AnalysisRecord:
+    return AnalysisRecord(
+        id=record_id,
+        client_reference=None,
+        conversation=SAMPLE_CONVERSATION,
+        engine_mode_requested="deterministic",
+        engine_used="deterministic_evidence_baseline_v1",
+        analysis_output={},
+        validation_warnings=[],
+        fallback_reason=None,
+        prompt_version="deterministic-baseline-v1",
+        created_at=created_at,
     )
 
 
@@ -166,3 +184,126 @@ def test_session_dependency_closes_session(monkeypatch: pytest.MonkeyPatch) -> N
     dependency.close()
 
     assert fake_session.closed is True
+
+
+def test_get_analysis_record_returns_existing_record(
+    database_session: Session,
+) -> None:
+    record = make_record("record-001", datetime.now(timezone.utc))
+    database_session.add(record)
+    database_session.commit()
+
+    retrieved = get_analysis_record(database_session, record.id)
+
+    assert retrieved is not None
+    assert retrieved.id == record.id
+
+
+def test_get_analysis_record_returns_none_for_missing_id(
+    database_session: Session,
+) -> None:
+    assert get_analysis_record(database_session, "missing-id") is None
+
+
+def test_list_analysis_records_returns_newest_first(
+    database_session: Session,
+) -> None:
+    now = datetime.now(timezone.utc)
+    database_session.add_all(
+        [
+            make_record("record-old", now - timedelta(days=1)),
+            make_record("record-new", now),
+            make_record("record-middle", now - timedelta(hours=1)),
+        ]
+    )
+    database_session.commit()
+
+    records = list_analysis_records(database_session)
+
+    assert [record.id for record in records] == [
+        "record-new",
+        "record-middle",
+        "record-old",
+    ]
+
+
+def test_list_analysis_records_uses_id_as_deterministic_tie_breaker(
+    database_session: Session,
+) -> None:
+    created_at = datetime.now(timezone.utc)
+    database_session.add_all(
+        [
+            make_record("record-001", created_at),
+            make_record("record-003", created_at),
+            make_record("record-002", created_at),
+        ]
+    )
+    database_session.commit()
+
+    records = list_analysis_records(database_session)
+
+    assert [record.id for record in records] == [
+        "record-003",
+        "record-002",
+        "record-001",
+    ]
+
+
+def test_list_analysis_records_applies_offset_and_limit(
+    database_session: Session,
+) -> None:
+    now = datetime.now(timezone.utc)
+    database_session.add_all(
+        [
+            make_record(f"record-{index:03d}", now + timedelta(minutes=index))
+            for index in range(5)
+        ]
+    )
+    database_session.commit()
+
+    records = list_analysis_records(database_session, offset=1, limit=2)
+
+    assert [record.id for record in records] == ["record-003", "record-002"]
+
+
+def test_list_analysis_records_rejects_negative_offset() -> None:
+    session = MagicMock(spec=Session)
+
+    with pytest.raises(ValueError, match="offset"):
+        list_analysis_records(session, offset=-1)
+
+    session.scalars.assert_not_called()
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_list_analysis_records_rejects_invalid_limit(limit: int) -> None:
+    session = MagicMock(spec=Session)
+
+    with pytest.raises(ValueError, match="limit"):
+        list_analysis_records(session, limit=limit)
+
+    session.scalars.assert_not_called()
+
+
+def test_get_analysis_record_sanitizes_query_failure_and_rolls_back() -> None:
+    session = MagicMock(spec=Session)
+    session.get.side_effect = SQLAlchemyError("private database detail")
+
+    with pytest.raises(AnalysisPersistenceError) as captured:
+        get_analysis_record(session, "record-001")
+
+    session.rollback.assert_called_once_with()
+    assert str(captured.value) == "The analysis records could not be retrieved."
+    assert "private database detail" not in str(captured.value)
+
+
+def test_list_analysis_records_sanitizes_query_failure_and_rolls_back() -> None:
+    session = MagicMock(spec=Session)
+    session.scalars.side_effect = SQLAlchemyError("private database detail")
+
+    with pytest.raises(AnalysisPersistenceError) as captured:
+        list_analysis_records(session)
+
+    session.rollback.assert_called_once_with()
+    assert str(captured.value) == "The analysis records could not be retrieved."
+    assert "private database detail" not in str(captured.value)
