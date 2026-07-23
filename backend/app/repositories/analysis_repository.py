@@ -1,4 +1,6 @@
-from sqlalchemy import select
+from datetime import datetime
+
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -10,7 +12,16 @@ class AnalysisPersistenceError(RuntimeError):
     pass
 
 
+class AnalysisNotFoundError(LookupError):
+    pass
+
+
+class AnalysisReviewConflictError(RuntimeError):
+    pass
+
+
 RETRIEVAL_ERROR_MESSAGE = "The analysis records could not be retrieved."
+REVIEW_ERROR_MESSAGE = "The analysis review could not be updated."
 
 
 def create_analysis_record(
@@ -79,3 +90,67 @@ def list_analysis_records(
     except SQLAlchemyError as error:
         session.rollback()
         raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
+
+
+def update_analysis_review(
+    session: Session,
+    analysis_id: str,
+    *,
+    review_status: str,
+    review_note: str | None,
+    expected_version: int,
+    reviewed_at: datetime,
+) -> AnalysisRecord:
+    try:
+        record = session.get(
+            AnalysisRecord,
+            analysis_id,
+            populate_existing=True,
+        )
+        if record is None:
+            raise AnalysisNotFoundError
+
+        if (
+            record.review_status == review_status
+            and record.review_note == review_note
+        ):
+            return record
+
+        statement = (
+            update(AnalysisRecord)
+            .where(
+                AnalysisRecord.id == analysis_id,
+                AnalysisRecord.review_version == expected_version,
+            )
+            .values(
+                review_status=review_status,
+                review_note=review_note,
+                reviewed_at=reviewed_at,
+                review_version=AnalysisRecord.review_version + 1,
+            )
+        )
+        result = session.execute(statement)
+        if result.rowcount != 1:
+            current = session.get(
+                AnalysisRecord,
+                analysis_id,
+                populate_existing=True,
+            )
+            if current is None:
+                raise AnalysisNotFoundError
+            raise AnalysisReviewConflictError
+
+        session.flush()
+        updated_record = session.get(
+            AnalysisRecord,
+            analysis_id,
+            populate_existing=True,
+        )
+        if updated_record is None:
+            raise AnalysisNotFoundError
+        return updated_record
+    except (AnalysisNotFoundError, AnalysisReviewConflictError):
+        raise
+    except SQLAlchemyError as error:
+        session.rollback()
+        raise AnalysisPersistenceError(REVIEW_ERROR_MESSAGE) from error
