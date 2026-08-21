@@ -4,6 +4,7 @@ import type {
   AnalysisResponse,
   AnalysisReviewResponse,
   PersistedAnalysisResponse,
+  Client,
 } from '../types';
 import {
   AnalysisReviewConflictError,
@@ -11,6 +12,11 @@ import {
   getAnalysis,
   listAnalyses,
   updateAnalysisReview,
+  ClientConflictError,
+  createClient,
+  getClient,
+  listClientAnalyses,
+  listClients,
 } from './api';
 
 afterEach(() => {
@@ -66,10 +72,20 @@ const analysisResponse: AnalysisResponse = {
 
 const persistedAnalysisResponse: PersistedAnalysisResponse = {
   ...analysisResponse,
+  client_id: null,
   review_status: 'pending_review',
   review_note: null,
   reviewed_at: null,
   review_version: 1,
+};
+
+const clientResponse: Client = {
+  id: '00000000-0000-0000-0000-000000000010',
+  display_name: 'Client One',
+  external_reference: 'EXT-10',
+  status: 'active',
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-02T00:00:00Z',
 };
 
 const reviewResponse: AnalysisReviewResponse = {
@@ -367,5 +383,55 @@ describe('listAnalyses', () => {
 
     await expect(listAnalyses(options)).rejects.toThrow(message);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('client API', () => {
+  it('validates client lists and rejects malformed items', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [clientResponse], offset: 0, limit: 20, returned_count: 1 })));
+    await expect(listClients()).resolves.toMatchObject({ items: [clientResponse] });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [{ ...clientResponse, status: 'unknown' }], offset: 0, limit: 20, returned_count: 1 })));
+    await expect(listClients()).rejects.toThrow('invalid response');
+  });
+
+  it('creates a client with normalized fields using POST', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(clientResponse, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    await createClient({ display_name: '  Client One ', external_reference: ' EXT-10 ' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/clients', expect.objectContaining({ method: 'POST', body: JSON.stringify({ display_name: 'Client One', external_reference: 'EXT-10' }) }));
+  });
+
+  it('sanitizes duplicate conflicts and missing clients', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private', { status: 409 })));
+    await expect(createClient({ display_name: 'One' })).rejects.toBeInstanceOf(ClientConflictError);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private', { status: 404 })));
+    await expect(getClient('missing')).rejects.toThrow('not found');
+  });
+
+  it('gets a client and encodes its ID', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(clientResponse));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getClient('id/with space')).resolves.toEqual(clientResponse);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/clients/id%2Fwith%20space', expect.any(Object));
+  });
+
+  it('validates client analysis review and client metadata', async () => {
+    const linked = { ...persistedAnalysisResponse, client_id: clientResponse.id };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [linked], offset: 0, limit: 20, returned_count: 1 })));
+    await expect(listClientAnalyses(clientResponse.id)).resolves.toMatchObject({ items: [linked] });
+  });
+
+  it('sanitizes malformed, network, and timeout failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{', { status: 200 })));
+    await expect(getClient('id')).rejects.toThrow('invalid response');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network')));
+    await expect(getClient('id')).rejects.toThrow('Unable to reach');
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((...[, init]: Parameters<typeof fetch>) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('private abort', 'AbortError')));
+    })));
+    const request = expect(getClient('id', 10)).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(10);
+    await request;
   });
 });

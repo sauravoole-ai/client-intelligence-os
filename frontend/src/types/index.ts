@@ -89,23 +89,41 @@ export interface AnalysisReviewResponse {
 }
 
 export interface PersistedAnalysisResponse extends AnalysisResponse {
+  client_id: string | null;
   review_status: AnalysisReviewStatus;
   review_note: string | null;
   reviewed_at: string | null;
   review_version: number;
 }
 
-export interface ClientRecord {
+export type ClientStatus = 'active' | 'archived';
+
+export interface Client {
   id: string;
-  reference: string;
-  attention: 'High' | 'Elevated' | 'Steady';
-  engagement: 'Active' | 'Watch' | 'Needs support';
-  period: string;
-  reviews: number;
-  nextAction: string;
-  coach: string;
-  updatedAt: string;
-  fallback: boolean;
+  display_name: string;
+  external_reference: string | null;
+  status: ClientStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClientCreateRequest {
+  display_name: string;
+  external_reference?: string | null;
+}
+
+export interface ClientListResponse {
+  items: Client[];
+  offset: number;
+  limit: number;
+  returned_count: number;
+}
+
+export interface ClientAnalysisListResponse {
+  items: PersistedAnalysisResponse[];
+  offset: number;
+  limit: number;
+  returned_count: number;
 }
 
 export interface ReviewItem {

@@ -42,6 +42,7 @@ const finding = {
 };
 
 const analysis: PersistedAnalysisResponse = {
+  client_id: null,
   analysis_id: analysisId,
   status: 'completed',
   created_at: '2026-01-01T10:30:00Z',
