@@ -14,6 +14,7 @@ from backend.app.db.base import Base
 BASELINE_REVISION = "0001_analysis_baseline"
 REVIEW_REVISION = "0002_analysis_review_fields"
 CLIENT_REVISION = "0003_client_foundation"
+ACTION_REVISION = "0004_action_items"
 REVIEW_COLUMNS = {
     "review_status",
     "review_note",
@@ -103,7 +104,7 @@ def test_fresh_database_upgrades_to_review_head(tmp_path: Path) -> None:
         "ix_analyses_client_reference",
         "ix_analyses_review_status",
     }
-    assert current_revision == CLIENT_REVISION
+    assert current_revision == ACTION_REVISION
 
 
 def test_migrated_columns_match_current_orm_model(tmp_path: Path) -> None:
@@ -333,4 +334,82 @@ def test_client_downgrade_preserves_analysis_and_review_fields_and_reupgrades(
     migrate(database_path, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     assert "clients" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_action_migration_schema_preserves_existing_data_and_creates_no_actions(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "action-migration.sqlite"
+    migrate(database_path, BASELINE_REVISION)
+    insert_baseline_record(database_path)
+    migrate(database_path, CLIENT_REVISION)
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE analyses
+                SET review_status = 'approved', review_note = 'kept',
+                    review_version = 2
+                WHERE id = :record_id
+                """
+            ),
+            {"record_id": RECORD_ID},
+        )
+    engine.dispose()
+
+    migrate(database_path, "head")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("action_items")}
+    indexes = {index["name"] for index in inspector.get_indexes("action_items")}
+    foreign_keys = inspector.get_foreign_keys("action_items")
+    unique_constraints = inspector.get_unique_constraints("action_items")
+    with engine.connect() as connection:
+        stored = connection.execute(
+            text(
+                """
+                SELECT conversation, review_status, review_note, review_version
+                FROM analyses WHERE id = :record_id
+                """
+            ),
+            {"record_id": RECORD_ID},
+        ).one()
+        action_count = connection.scalar(text("SELECT COUNT(*) FROM action_items"))
+    assert columns == {
+        "id", "analysis_id", "client_id", "source_action_id", "title",
+        "description", "priority", "status", "linked_finding_ids", "due_at",
+        "completed_at", "created_at", "updated_at", "version",
+    }
+    assert indexes == {
+        "ix_action_items_analysis_id", "ix_action_items_client_id",
+        "ix_action_items_status",
+    }
+    assert {key["referred_table"] for key in foreign_keys} == {"analyses", "clients"}
+    assert unique_constraints[0]["column_names"] == ["analysis_id", "source_action_id"]
+    assert stored == (PRIVATE_CONVERSATION, "approved", "kept", 2)
+    assert action_count == 0
+    engine.dispose()
+
+
+def test_action_migration_downgrade_preserves_foundation_and_reupgrades(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "action-cycle.sqlite"
+    migrate(database_path, BASELINE_REVISION)
+    insert_baseline_record(database_path)
+    migrate(database_path, "head")
+    command.downgrade(make_alembic_config(database_path), CLIENT_REVISION)
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    inspector = inspect(engine)
+    assert "action_items" not in inspector.get_table_names()
+    assert {"analyses", "clients"} <= set(inspector.get_table_names())
+    assert stored_record(database_path) == (
+        RECORD_ID, PRIVATE_CONVERSATION, "pending_review", None, None, 1
+    )
+    engine.dispose()
+    migrate(database_path, "head")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    assert "action_items" in inspect(engine).get_table_names()
     engine.dispose()

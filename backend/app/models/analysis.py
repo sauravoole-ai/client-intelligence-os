@@ -58,3 +58,6 @@ class AnalysisRecord(Base):
     client: Mapped["ClientRecord | None"] = relationship(  # noqa: F821
         back_populates="analyses"
     )
+    action_items: Mapped[list["ActionItemRecord"]] = relationship(  # noqa: F821
+        back_populates="analysis"
+    )

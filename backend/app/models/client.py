@@ -36,3 +36,7 @@ class ClientRecord(Base):
         back_populates="client",
         passive_deletes=True,
     )
+    action_items: Mapped[list["ActionItemRecord"]] = relationship(  # noqa: F821
+        back_populates="client",
+        passive_deletes=True,
+    )
