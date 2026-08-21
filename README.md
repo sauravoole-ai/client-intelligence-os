@@ -5,7 +5,7 @@ Client Intelligence OS analyzes client–coach conversations into evidence-backe
 ## Current capabilities
 
 - FastAPI backend with a deterministic analysis baseline
-- Provider-isolated LLM architecture
+- Provider-isolated Groq LLM architecture with deterministic fallback
 - Evidence verification and exact source references
 - React and TypeScript frontend
 - Responsive intelligence and review workspace
@@ -63,7 +63,14 @@ Create local configuration by copying the example file:
 Copy-Item .env.example .env
 ```
 
-Never commit `.env`. Do not enable live provider calls without intentional provider and billing configuration.
+The primary AI provider is Groq, using `openai/gpt-oss-20b` by default. That is an
+open-weight model ID served through Groq; this configuration does not call OpenAI's
+paid API. `GROQ_API_KEY` is required only for LLM inference. Deterministic mode works
+without a provider key, and auto mode can use deterministic fallback when enabled.
+Groq's current free-tier limits and availability may change.
+
+Never commit `.env` or any provider credential. Configure secrets only in your local
+or deployment environment.
 
 ## Repository structure
 
