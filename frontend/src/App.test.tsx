@@ -27,4 +27,11 @@ describe('application shell', () => {
     expect(view.getByRole('dialog', { name: /Intelligence Navigator/i })).toBeInTheDocument();
   });
 
+  it('routes to the persisted Actions queue from navigation', async () => {
+    const user = userEvent.setup();
+    const view = render(<MemoryRouter initialEntries={['/overview']}><App /></MemoryRouter>);
+    await user.click(view.getByRole('link', { name: /Actions/i }));
+    expect(view.getByRole('heading', { name: 'Action queue' })).toBeInTheDocument();
+  });
+
 });

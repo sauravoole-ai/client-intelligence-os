@@ -96,6 +96,43 @@ export interface PersistedAnalysisResponse extends AnalysisResponse {
   review_version: number;
 }
 
+export type ActionItemStatus = 'open' | 'in_progress' | 'completed' | 'dismissed';
+
+export interface ActionItem {
+  id: string;
+  analysis_id: string;
+  client_id: string | null;
+  source_action_id: string;
+  title: string;
+  description: string;
+  priority: number;
+  status: ActionItemStatus;
+  linked_finding_ids: string[];
+  due_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+export interface MaterializeActionsRequest { source_action_ids: string[]; }
+export interface MaterializeActionsResponse {
+  analysis_id: string;
+  items: ActionItem[];
+  created_count: number;
+  existing_count: number;
+}
+export interface ActionItemListResponse {
+  items: ActionItem[];
+  offset: number;
+  limit: number;
+  returned_count: number;
+}
+export interface ActionStatusUpdateRequest {
+  status: ActionItemStatus;
+  expected_version: number;
+}
+
 export type ClientStatus = 'active' | 'archived';
 
 export interface Client {

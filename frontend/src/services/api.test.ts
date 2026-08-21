@@ -17,6 +17,13 @@ import {
   getClient,
   listClientAnalyses,
   listClients,
+  ActionStatusConflictError,
+  getAction,
+  listActions,
+  listAnalysisActions,
+  listClientActions,
+  materializeAnalysisActions,
+  updateActionStatus,
 } from './api';
 
 afterEach(() => {
@@ -87,6 +94,7 @@ const clientResponse: Client = {
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-02T00:00:00Z',
 };
+const actionItem = { id: 'action-item-1', analysis_id: analysisResponse.analysis_id, client_id: null, source_action_id: 'action-1', title: 'Follow up', description: 'Stored rationale', priority: 1, status: 'open' as const, linked_finding_ids: ['finding-1'], due_at: null, completed_at: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
 
 const reviewResponse: AnalysisReviewResponse = {
   analysis_id: analysisResponse.analysis_id,
@@ -433,5 +441,38 @@ describe('client API', () => {
     const request = expect(getClient('id', 10)).rejects.toThrow('timed out');
     await vi.advanceTimersByTimeAsync(10);
     await request;
+  });
+});
+
+describe('action API', () => {
+  it('materializes using POST and sends source IDs only', async () => {
+    const response = { analysis_id: analysisResponse.analysis_id, items: [actionItem], created_count: 1, existing_count: 0 };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201)); vi.stubGlobal('fetch', fetchMock);
+    await expect(materializeAnalysisActions('analysis/id', { source_action_ids: ['action-1'] })).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/analyses/analysis%2Fid/actions', expect.objectContaining({ method: 'POST', body: JSON.stringify({ source_action_ids: ['action-1'] }) }));
+  });
+  it('rejects malformed materialization', async () => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [{}], created_count: 1, existing_count: 0 }))); await expect(materializeAnalysisActions('id', { source_action_ids: ['a'] })).rejects.toThrow('invalid response'); });
+  it('lists and encodes status/client filters', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [actionItem], offset: 0, limit: 20, returned_count: 1 })); vi.stubGlobal('fetch', fetchMock);
+    await listActions({ status: 'in_progress', client_id: 'client/id' });
+    expect(fetchMock.mock.calls[0][0]).toContain('status=in_progress'); expect(fetchMock.mock.calls[0][0]).toContain('client_id=client%2Fid');
+  });
+  it('encodes action, analysis, and client IDs', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(actionItem)); vi.stubGlobal('fetch', fetchMock); await getAction('item/id'); expect(fetchMock.mock.calls[0][0]).toContain('item%2Fid');
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({ items: [], offset: 0, limit: 100, returned_count: 0 }))); await listAnalysisActions('analysis/id'); await listClientActions('client/id'); expect(fetchMock.mock.calls[1][0]).toContain('analysis%2Fid'); expect(fetchMock.mock.calls[2][0]).toContain('client%2Fid');
+  });
+  it('updates status using PUT and expected version', async () => {
+    const updated = { ...actionItem, status: 'completed' as const, version: 2, completed_at: '2026-01-02T00:00:00Z' }; const fetchMock = vi.fn().mockResolvedValue(jsonResponse(updated)); vi.stubGlobal('fetch', fetchMock);
+    await expect(updateActionStatus(actionItem.id, { status: 'completed', expected_version: 1 })).resolves.toEqual(updated);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/actions/action-item-1/status', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ status: 'completed', expected_version: 1 }) }));
+  });
+  it('represents conflict safely and sanitizes HTTP failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private', { status: 409 }))); await expect(updateActionStatus('id', { status: 'open', expected_version: 1 })).rejects.toBeInstanceOf(ActionStatusConflictError);
+    for (const status of [404, 422, 503]) { vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private detail', { status }))); await expect(getAction('id')).rejects.not.toThrow('private detail'); }
+  });
+  it('sanitizes malformed, network, and timeout failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...actionItem, linked_finding_ids: null }))); await expect(getAction('id')).rejects.toThrow('invalid response');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network'))); await expect(getAction('id')).rejects.toThrow('Unable to reach');
+    vi.useFakeTimers(); vi.stubGlobal('fetch', vi.fn((...[, init]: Parameters<typeof fetch>) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('private', 'AbortError')))))); const request = expect(getAction('id', 10)).rejects.toThrow('timed out'); await vi.advanceTimersByTimeAsync(10); await request;
   });
 });

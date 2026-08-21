@@ -3,11 +3,15 @@ import type { ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   AnalysisReviewConflictError,
+  ActionMaterializationConflictError,
   getAnalysis,
+  listAnalysisActions,
+  materializeAnalysisActions,
   updateAnalysisReview,
 } from '../services/api';
 import type {
   AnalysisReviewDecision,
+  ActionItem,
   CoachAction,
   EvidenceReference,
   Finding,
@@ -116,12 +120,12 @@ function RiskFlagCard({ risk }: { risk: RiskFlag }) {
   );
 }
 
-function RecommendedActionCard({ action }: { action: CoachAction }) {
+function RecommendedActionCard({ action, approved, created, selected, disabled, onSelect }: { action: CoachAction; approved: boolean; created?: ActionItem; selected: boolean; disabled: boolean; onSelect: (selected: boolean) => void }) {
   return (
     <article className="detail-card detail-card--action">
       <div className="detail-card__header">
         <div>
-          <div className="eyebrow">Recommended action</div>
+          <div className="eyebrow">AI recommendation</div>
           <h3>{action.action}</h3>
         </div>
         <span className="badge badge--positive">Priority {action.priority}</span>
@@ -141,6 +145,7 @@ function RecommendedActionCard({ action }: { action: CoachAction }) {
         )}
       </div>
       <EvidenceList evidence={action.evidence} />
+      {created ? <div className="form-feedback" role="status">Operational Action Item created · {created.status.replace('_', ' ')}</div> : approved ? <label className="action-selection"><input type="checkbox" checked={selected} disabled={disabled} onChange={(event) => onSelect(event.target.checked)} /> Select this recommendation for an operational Action Item</label> : null}
     </article>
   );
 }
@@ -387,6 +392,11 @@ function AnalysisDetailPage() {
   } | null>(null);
   const [reviewValidation, setReviewValidation] = useState<string | null>(null);
   const reviewLock = useRef(false);
+  const actionLock = useRef(false);
+  const [actions, setActions] = useState<ActionItem[]>([]);
+  const [selectedActionIds, setSelectedActionIds] = useState<string[]>([]);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ kind: 'success' | 'error' | 'conflict'; message: string } | null>(null);
 
   useEffect(() => {
     if (!analysisId || !UUID_PATTERN.test(analysisId)) {
@@ -397,13 +407,16 @@ function AnalysisDetailPage() {
 
     let active = true;
     setStatus('loading');
-    getAnalysis(analysisId)
-      .then((response) => {
+    Promise.all([getAnalysis(analysisId), listAnalysisActions(analysisId)])
+      .then(([response, actionResponse]) => {
         if (!active) return;
         setAnalysis(response);
         setReviewNote(response.review_note || '');
         setReviewFeedback(null);
         setReviewValidation(null);
+        setActions(actionResponse.items);
+        setSelectedActionIds([]);
+        setActionFeedback(null);
         setStatus('success');
       })
       .catch((error: unknown) => {
@@ -484,6 +497,35 @@ function AnalysisDetailPage() {
     }
   };
 
+  const materializeSelected = async () => {
+    if (!analysisId || actionLock.current || selectedActionIds.length === 0) return;
+    actionLock.current = true; setActionBusy(true); setActionFeedback(null);
+    try {
+      const response = await materializeAnalysisActions(analysisId, { source_action_ids: selectedActionIds });
+      setActions((current) => {
+        const bySource = new Map(current.map((item) => [item.source_action_id, item]));
+        response.items.forEach((item) => bySource.set(item.source_action_id, item));
+        return Array.from(bySource.values());
+      });
+      setSelectedActionIds([]);
+      setActionFeedback({ kind: 'success', message: `${response.created_count} Action Item${response.created_count === 1 ? '' : 's'} created; ${response.existing_count} already existed.` });
+    } catch (error) {
+      setActionFeedback(error instanceof ActionMaterializationConflictError
+        ? { kind: 'conflict', message: 'The approval state changed. Reload the saved analysis before creating Action Items.' }
+        : { kind: 'error', message: error instanceof Error ? error.message : 'The selected Action Items could not be created.' });
+    } finally { actionLock.current = false; setActionBusy(false); }
+  };
+
+  const reloadActionsAndAnalysis = async () => {
+    if (!analysisId || actionLock.current) return;
+    actionLock.current = true; setActionBusy(true);
+    try {
+      const [latestAnalysis, latestActions] = await Promise.all([getAnalysis(analysisId), listAnalysisActions(analysisId)]);
+      setAnalysis(latestAnalysis); setActions(latestActions.items); setSelectedActionIds([]); setActionFeedback(null);
+    } catch { setActionFeedback({ kind: 'error', message: 'The latest saved analysis and Action Items could not be loaded.' }); }
+    finally { actionLock.current = false; setActionBusy(false); }
+  };
+
   if (status === 'loading') return <AnalysisDetailSkeleton />;
   if (status === 'not-found' || status === 'error' || status === 'invalid') {
     return <AnalysisDetailErrorState kind={status} onRetry={retry} />;
@@ -533,11 +575,13 @@ function AnalysisDetailPage() {
       </AnalysisSection>
 
       <AnalysisSection title="Recommended actions" description="Prioritised next steps from the saved analysis.">
+        {analysis.review_status !== 'approved' ? <p className="form-feedback">Approve this analysis before creating operational Action Items.</p> : null}
         {analysis.recommended_actions.length > 0 ? (
           <div className="analysis-detail__cards">
-            {analysis.recommended_actions.map((action) => <RecommendedActionCard action={action} key={action.action_id} />)}
+            {analysis.recommended_actions.map((action) => <RecommendedActionCard action={action} approved={analysis.review_status === 'approved'} created={actions.find((item) => item.source_action_id === action.action_id)} selected={selectedActionIds.includes(action.action_id)} disabled={actionBusy} onSelect={(selected) => setSelectedActionIds((current) => selected ? [...current, action.action_id] : current.filter((id) => id !== action.action_id))} key={action.action_id} />)}
           </div>
         ) : <p className="analysis-detail__empty-subsection card">No recommended actions were stored.</p>}
+        {analysis.review_status === 'approved' && analysis.recommended_actions.length > 0 ? <div className="action-materialization" aria-busy={actionBusy}><button className="primary" type="button" disabled={actionBusy || selectedActionIds.length === 0} onClick={() => void materializeSelected()}>{actionBusy ? 'Creating…' : 'Create selected actions'}</button>{actionFeedback ? <div role={actionFeedback.kind === 'success' ? 'status' : 'alert'} aria-live="polite" className={actionFeedback.kind === 'success' ? 'form-feedback' : 'form-feedback form-feedback--error'}>{actionFeedback.message}{actionFeedback.kind === 'conflict' ? <button className="secondary" type="button" onClick={() => void reloadActionsAndAnalysis()}>Reload saved analysis</button> : null}</div> : null}</div> : null}
       </AnalysisSection>
 
       <div className="analysis-detail__split">
