@@ -29,11 +29,13 @@ def create_analysis_record(
     analysis: AnalysisResponse,
     original_conversation: str,
     requested_engine_mode: str,
+    client_id: str | None = None,
 ) -> AnalysisRecord:
     """Add and flush an analysis record; the caller retains final commit control."""
     record = AnalysisRecord(
         id=str(analysis.analysis_id),
         client_reference=analysis.client_reference,
+        client_id=client_id,
         conversation=original_conversation,
         engine_mode_requested=requested_engine_mode,
         engine_used=analysis.engine,
@@ -72,14 +74,18 @@ def list_analysis_records(
     *,
     offset: int = 0,
     limit: int = 20,
+    client_id: str | None = None,
 ) -> list[AnalysisRecord]:
     if offset < 0:
         raise ValueError("offset must be zero or greater")
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
 
+    statement = select(AnalysisRecord)
+    if client_id is not None:
+        statement = statement.where(AnalysisRecord.client_id == client_id)
     statement = (
-        select(AnalysisRecord)
+        statement
         .order_by(AnalysisRecord.created_at.desc(), AnalysisRecord.id.desc())
         .offset(offset)
         .limit(limit)

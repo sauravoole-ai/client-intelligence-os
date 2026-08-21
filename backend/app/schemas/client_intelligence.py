@@ -78,6 +78,7 @@ class AnalysisRequest(BaseModel):
         default=None,
         description="An anonymised internal client reference.",
     )
+    client_id: UUID | None = None
     analysis_period: str | None = None
     engine_mode: Literal["auto", "llm", "deterministic"] = "auto"
 
@@ -150,6 +151,7 @@ class AnalysisReviewResponse(BaseModel):
 
 
 class PersistedAnalysisResponse(AnalysisResponse):
+    client_id: UUID | None
     review_status: AnalysisReviewState
     review_note: str | None
     reviewed_at: datetime | None

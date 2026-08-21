@@ -18,6 +18,10 @@ from backend.app.repositories.analysis_repository import (
     list_analysis_records,
     update_analysis_review,
 )
+from backend.app.repositories.client_repository import (
+    ClientRepositoryError,
+    get_client_by_id,
+)
 from backend.app.schemas.client_intelligence import (
     AnalysisListResponse,
     AnalysisRequest,
@@ -45,8 +49,29 @@ def create_analysis(
     payload: AnalysisRequest,
     session: Session = Depends(get_db_session),
 ) -> AnalysisResponse:
+    resolved_payload = payload
+    resolved_client_id: str | None = None
+    if payload.client_id is not None:
+        try:
+            selected_client = get_client_by_id(session, str(payload.client_id))
+        except ClientRepositoryError as error:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The selected client could not be retrieved.",
+            ) from error
+        if selected_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The selected client was not found.",
+            )
+        resolved_client_id = selected_client.id
+        resolved_payload = payload.model_copy(
+            update={"client_reference": selected_client.external_reference}
+        )
+
     try:
-        analysis = run_analysis(payload)
+        analysis = run_analysis(resolved_payload)
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -69,6 +94,7 @@ def create_analysis(
             analysis,
             payload.conversation,
             payload.engine_mode,
+            resolved_client_id,
         )
         session.commit()
     except (AnalysisPersistenceError, SQLAlchemyError) as error:
@@ -97,6 +123,7 @@ def persisted_analysis_response(
 ) -> PersistedAnalysisResponse:
     return PersistedAnalysisResponse(
         **analysis.model_dump(),
+        client_id=record.client_id,
         review_status=record.review_status,
         review_note=record.review_note,
         reviewed_at=record.reviewed_at,

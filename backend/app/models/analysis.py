@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, JSON, String, Text, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.base import Base
 
@@ -13,6 +13,12 @@ class AnalysisRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     client_reference: Mapped[str | None] = mapped_column(
         String(255),
+        nullable=True,
+        index=True,
+    )
+    client_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("clients.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -48,4 +54,7 @@ class AnalysisRecord(Base):
         nullable=False,
         default=1,
         server_default=text("1"),
+    )
+    client: Mapped["ClientRecord | None"] = relationship(  # noqa: F821
+        back_populates="analyses"
     )
