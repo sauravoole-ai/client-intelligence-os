@@ -1,16 +1,18 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAnalysis } from '../services/api';
-import type { AnalysisResponse } from '../types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAnalysis, listClients } from '../services/api';
+import type { AnalysisResponse, ClientListResponse } from '../types';
 import NewAnalysisPage from './NewAnalysisPage';
 
 vi.mock('../services/api', () => ({
   createAnalysis: vi.fn(),
+  listClients: vi.fn(),
 }));
 
 const mockedCreateAnalysis = vi.mocked(createAnalysis);
+const mockedListClients = vi.mocked(listClients);
 const analysisId = '00000000-0000-4000-8000-000000000001';
 const validConversation = 'Client: This is a sufficiently long conversation update.';
 
@@ -42,6 +44,11 @@ const analysis: AnalysisResponse = {
   fallback_reason: null,
 };
 
+const clientList: ClientListResponse = {
+  items: [{ id: 'client-1', display_name: 'Real Client', external_reference: 'EXT-1', status: 'active', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }],
+  offset: 0, limit: 100, returned_count: 1,
+};
+
 function renderPage() {
   return render(
     <MemoryRouter>
@@ -59,7 +66,10 @@ async function submitValidConversation() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  mockedListClients.mockResolvedValue(clientList);
 });
+
+beforeEach(() => mockedListClients.mockResolvedValue(clientList));
 
 describe('NewAnalysisPage submission workflow', () => {
   it('keeps the completed result summary visible after success', async () => {
@@ -136,10 +146,31 @@ describe('NewAnalysisPage submission workflow', () => {
 
     await submitValidConversation();
 
-    expect(screen.getByLabelText('Anonymised client reference')).toBeDisabled();
+    expect(screen.getByLabelText('Linked client')).toBeDisabled();
     expect(screen.getByLabelText('Analysis period')).toBeDisabled();
     expect(screen.getByLabelText('Conversation text')).toBeDisabled();
-    expect(screen.getByRole('combobox')).toBeDisabled();
+    expect(screen.getByLabelText('Linked client')).toBeDisabled();
+    expect(screen.getByLabelText('Engine mode')).toBeDisabled();
+  });
+
+  it('loads active clients and submits the selected client ID without a manual reference', async () => {
+    mockedCreateAnalysis.mockResolvedValue(analysis);
+    renderPage();
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByLabelText('Linked client'), 'client-1');
+    await user.type(screen.getByLabelText('Conversation text'), validConversation);
+    await user.click(screen.getByRole('button', { name: 'Submit analysis' }));
+    expect(mockedCreateAnalysis).toHaveBeenCalledWith(expect.objectContaining({ client_id: 'client-1' }));
+    expect(mockedCreateAnalysis.mock.calls[0][0]).not.toHaveProperty('client_reference');
+  });
+
+  it('keeps anonymous analysis available when clients fail to load', async () => {
+    mockedListClients.mockRejectedValue(new Error('unavailable'));
+    mockedCreateAnalysis.mockResolvedValue(analysis);
+    renderPage();
+    expect(await screen.findByText(/Anonymous analysis remains available/)).toBeInTheDocument();
+    await submitValidConversation();
+    expect(mockedCreateAnalysis.mock.calls[0][0]).not.toHaveProperty('client_id');
   });
 
   it('blocks repeated submission while the first request is pending', async () => {
@@ -181,6 +212,6 @@ describe('NewAnalysisPage submission workflow', () => {
     await waitFor(() => expect(screen.getByText('Submission issue')).toBeInTheDocument());
 
     expect(screen.getByLabelText('Conversation text')).toBeEnabled();
-    expect(screen.getByRole('combobox')).toBeEnabled();
+    expect(screen.getByLabelText('Linked client')).toBeEnabled();
   });
 });

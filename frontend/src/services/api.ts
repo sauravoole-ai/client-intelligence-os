@@ -1,13 +1,23 @@
 import type {
   AnalysisListResponse,
+  ActionItem,
+  ActionItemListResponse,
+  ActionItemStatus,
+  ActionStatusUpdateRequest,
   AnalysisResponse,
   AnalysisReviewRequest,
   AnalysisReviewResponse,
   CoachAction,
+  Client,
+  ClientAnalysisListResponse,
+  ClientCreateRequest,
+  ClientListResponse,
   EvidenceReference,
   Finding,
   PersistedAnalysisResponse,
   RiskFlag,
+  MaterializeActionsRequest,
+  MaterializeActionsResponse,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -15,6 +25,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 export interface CreateAnalysisPayload {
   conversation: string;
   client_reference?: string | null;
+  client_id?: string | null;
   analysis_period?: string | null;
   engine_mode?: 'auto' | 'llm' | 'deterministic';
 }
@@ -153,8 +164,200 @@ function isAnalysisReviewResponse(value: unknown): value is AnalysisReviewRespon
 function isPersistedAnalysisResponse(
   value: unknown,
 ): value is PersistedAnalysisResponse {
-  return isAnalysisResponse(value)
+  return isRecord(value)
+    && (value.client_id === null || typeof value.client_id === 'string')
+    && isAnalysisResponse(value)
     && isAnalysisReviewResponse(value);
+}
+
+function isClientStatus(value: unknown) {
+  return value === 'active' || value === 'archived';
+}
+
+function isClient(value: unknown): value is Client {
+  return isRecord(value)
+    && typeof value.id === 'string'
+    && typeof value.display_name === 'string'
+    && isNullableString(value.external_reference)
+    && isClientStatus(value.status)
+    && typeof value.created_at === 'string'
+    && typeof value.updated_at === 'string';
+}
+
+function isPagination(value: Record<string, unknown>, length: number) {
+  return Number.isInteger(value.offset) && typeof value.offset === 'number' && value.offset >= 0
+    && Number.isInteger(value.limit) && typeof value.limit === 'number' && value.limit >= 1 && value.limit <= 100
+    && Number.isInteger(value.returned_count) && value.returned_count === length;
+}
+
+function isClientListResponse(value: unknown): value is ClientListResponse {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(isClient)
+    && isPagination(value, value.items.length);
+}
+
+function isClientAnalysisListResponse(value: unknown): value is ClientAnalysisListResponse {
+  return isRecord(value) && Array.isArray(value.items)
+    && value.items.every(isPersistedAnalysisResponse)
+    && isPagination(value, value.items.length);
+}
+
+function isActionStatus(value: unknown): value is ActionItemStatus {
+  return value === 'open' || value === 'in_progress' || value === 'completed' || value === 'dismissed';
+}
+
+function isActionItem(value: unknown): value is ActionItem {
+  return isRecord(value)
+    && typeof value.id === 'string' && typeof value.analysis_id === 'string'
+    && isNullableString(value.client_id) && typeof value.source_action_id === 'string'
+    && typeof value.title === 'string' && typeof value.description === 'string'
+    && typeof value.priority === 'number' && isActionStatus(value.status)
+    && isStringArray(value.linked_finding_ids) && isNullableString(value.due_at)
+    && isNullableString(value.completed_at) && typeof value.created_at === 'string'
+    && typeof value.updated_at === 'string' && typeof value.version === 'number'
+    && Number.isInteger(value.version) && value.version >= 1;
+}
+
+function isActionList(value: unknown): value is ActionItemListResponse {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(isActionItem)
+    && isPagination(value, value.items.length);
+}
+
+function isMaterialization(value: unknown): value is MaterializeActionsResponse {
+  return isRecord(value) && typeof value.analysis_id === 'string'
+    && Array.isArray(value.items) && value.items.every(isActionItem)
+    && Number.isInteger(value.created_count) && typeof value.created_count === 'number' && value.created_count >= 0
+    && Number.isInteger(value.existing_count) && typeof value.existing_count === 'number' && value.existing_count >= 0;
+}
+
+class ActionApiError extends Error {}
+export class ActionStatusConflictError extends Error {
+  constructor() { super('This Action Item was changed elsewhere.'); this.name = 'ActionStatusConflictError'; }
+}
+export class ActionMaterializationConflictError extends Error {
+  constructor() { super('This analysis must be approved before creating Action Items.'); this.name = 'ActionMaterializationConflictError'; }
+}
+
+async function actionRequest<T>(path: string, validator: (value: unknown) => value is T, init: NonNullable<Parameters<typeof fetch>[1]> = {}, timeoutMs = 15_000, conflict: 'status' | 'materialize' = 'status'): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      if (response.status === 409) throw conflict === 'status' ? new ActionStatusConflictError() : new ActionMaterializationConflictError();
+      if (response.status === 404) throw new ActionApiError('The requested Action Item was not found.');
+      if (response.status === 422) throw new ActionApiError('The Action Item request could not be validated.');
+      if (response.status === 503) throw new ActionApiError('The Action Item service is currently unavailable.');
+      throw new ActionApiError('The server returned an unexpected error.');
+    }
+    const data: unknown = await response.json();
+    if (!validator(data)) throw new ActionApiError('The Action Item service returned an invalid response.');
+    return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('The Action Item request timed out. Please retry.');
+    if (error instanceof SyntaxError) throw new Error('The Action Item service returned an invalid response.');
+    if (error instanceof ActionApiError || error instanceof ActionStatusConflictError || error instanceof ActionMaterializationConflictError) throw error;
+    throw new Error('Unable to reach the Action Item service.');
+  } finally { window.clearTimeout(timeout); }
+}
+
+export function materializeAnalysisActions(analysisId: string, request: MaterializeActionsRequest, timeoutMs = 15_000) {
+  return actionRequest(`/analyses/${encodeURIComponent(analysisId)}/actions`, isMaterialization, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_action_ids: request.source_action_ids }) }, timeoutMs, 'materialize');
+}
+export function listActions(filters: { status?: ActionItemStatus; client_id?: string; offset?: number; limit?: number } = {}, timeoutMs = 15_000) {
+  const { offset, limit } = validatePageOptions(filters); const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  if (filters.status) query.set('status', filters.status); if (filters.client_id) query.set('client_id', filters.client_id);
+  return actionRequest(`/actions?${query}`, isActionList, {}, timeoutMs);
+}
+export function getAction(actionId: string, timeoutMs = 15_000) { return actionRequest(`/actions/${encodeURIComponent(actionId)}`, isActionItem, {}, timeoutMs); }
+export function listAnalysisActions(analysisId: string, timeoutMs = 15_000) { return actionRequest(`/analyses/${encodeURIComponent(analysisId)}/actions?offset=0&limit=100`, isActionList, {}, timeoutMs); }
+export function listClientActions(clientId: string, timeoutMs = 15_000) { return actionRequest(`/clients/${encodeURIComponent(clientId)}/actions?offset=0&limit=100`, isActionList, {}, timeoutMs); }
+export function updateActionStatus(actionId: string, request: ActionStatusUpdateRequest, timeoutMs = 15_000) {
+  return actionRequest(`/actions/${encodeURIComponent(actionId)}/status`, isActionItem, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }, timeoutMs);
+}
+
+export class ClientConflictError extends Error {
+  constructor() {
+    super('That external reference is already in use. Choose another reference.');
+    this.name = 'ClientConflictError';
+  }
+}
+
+async function clientRequest<T>(
+  path: string,
+  validator: (value: unknown) => value is T,
+  init: NonNullable<Parameters<typeof fetch>[1]> = {},
+  timeoutMs = 15_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      if (response.status === 409) throw new ClientConflictError();
+      if (response.status === 404) throw new Error('The requested client was not found.');
+      if (response.status === 422) throw new Error('The client information could not be validated.');
+      if (response.status === 503) throw new Error('The client service is currently unavailable.');
+      throw new Error('The server returned an unexpected error.');
+    }
+    const data: unknown = await response.json();
+    if (!validator(data)) throw new Error('The client service returned an invalid response.');
+    return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('The client request timed out. Please retry.');
+    }
+    if (error instanceof SyntaxError) throw new Error('The client service returned an invalid response.');
+    if (error instanceof ClientConflictError) throw error;
+    if (error instanceof Error && (
+      error.message.startsWith('The requested client')
+      || error.message.startsWith('The client ')
+      || error.message.startsWith('The server ')
+    )) throw error;
+    throw new Error('Unable to reach the client service.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function validatePageOptions(options: { offset?: number; limit?: number }) {
+  const offset = options.offset ?? 0;
+  const limit = options.limit ?? 20;
+  if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be an integer of at least 0');
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('limit must be an integer between 1 and 100');
+  return { offset, limit };
+}
+
+export function createClient(payload: ClientCreateRequest, timeoutMs = 15_000): Promise<Client> {
+  const displayName = payload.display_name.trim();
+  const externalReference = payload.external_reference?.trim() || null;
+  return clientRequest('/clients', isClient, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName, external_reference: externalReference }),
+  }, timeoutMs);
+}
+
+export function listClients(options: { offset?: number; limit?: number } = {}, timeoutMs = 15_000) {
+  const { offset, limit } = validatePageOptions(options);
+  return clientRequest(`/clients?offset=${offset}&limit=${limit}`, isClientListResponse, {}, timeoutMs);
+}
+
+export function getClient(clientId: string, timeoutMs = 15_000) {
+  return clientRequest(`/clients/${encodeURIComponent(clientId)}`, isClient, {}, timeoutMs);
+}
+
+export function listClientAnalyses(
+  clientId: string,
+  options: { offset?: number; limit?: number } = {},
+  timeoutMs = 15_000,
+) {
+  const { offset, limit } = validatePageOptions(options);
+  return clientRequest(
+    `/clients/${encodeURIComponent(clientId)}/analyses?offset=${offset}&limit=${limit}`,
+    isClientAnalysisListResponse,
+    {},
+    timeoutMs,
+  );
 }
 
 class ReviewApiError extends Error {}

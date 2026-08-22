@@ -27,18 +27,11 @@ describe('application shell', () => {
     expect(view.getByRole('dialog', { name: /Intelligence Navigator/i })).toBeInTheDocument();
   });
 
-  it('requires a reason before a finding can be rejected', async () => {
+  it('routes to the persisted Actions queue from navigation', async () => {
     const user = userEvent.setup();
-    const view = render(
-      <MemoryRouter initialEntries={['/clients/anon-001']}>
-        <App />
-      </MemoryRouter>,
-    );
-
-    await user.click(view.getAllByRole('button', { name: 'Reject' })[1]);
-    const confirm = view.getByRole('button', { name: /Confirm rejection/i });
-    expect(confirm).toBeDisabled();
-    await user.type(view.getByLabelText(/Rejection reason/i), 'Source message does not support this finding.');
-    expect(confirm).toBeEnabled();
+    const view = render(<MemoryRouter initialEntries={['/overview']}><App /></MemoryRouter>);
+    await user.click(view.getByRole('link', { name: /Actions/i }));
+    expect(view.getByRole('heading', { name: 'Action queue' })).toBeInTheDocument();
   });
+
 });

@@ -1,10 +1,10 @@
-import { FormEvent, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { createAnalysis } from '../services/api';
-import type { AnalysisResponse } from '../types';
+import { createAnalysis, listClients } from '../services/api';
+import type { AnalysisResponse, Client } from '../types';
 
 const emptyForm = {
-  client_reference: '',
+  client_id: '',
   analysis_period: '',
   conversation: '',
   engine_mode: 'deterministic' as 'auto' | 'llm' | 'deterministic',
@@ -15,6 +15,20 @@ function NewAnalysisPage() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [result, setResult] = useState<AnalysisResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
+  const [clients, setClients] = useState<Client[]>([]);
+  const [clientLoadState, setClientLoadState] = useState<'loading' | 'success' | 'error'>('loading');
+
+  useEffect(() => {
+    let active = true;
+    listClients({ limit: 100 }).then((response) => {
+      if (!active) return;
+      setClients(response.items.filter((client) => client.status === 'active'));
+      setClientLoadState('success');
+    }).catch(() => {
+      if (active) setClientLoadState('error');
+    });
+    return () => { active = false; };
+  }, []);
 
   const charCount = useMemo(() => form.conversation.length, [form.conversation]);
 
@@ -26,7 +40,7 @@ function NewAnalysisPage() {
     try {
       const response = await createAnalysis({
         conversation: form.conversation,
-        client_reference: form.client_reference || null,
+        ...(form.client_id ? { client_id: form.client_id } : {}),
         analysis_period: form.analysis_period || null,
         engine_mode: form.engine_mode,
       });
@@ -53,9 +67,16 @@ function NewAnalysisPage() {
       <div className="grid grid--2">
         <form className="card stack" onSubmit={handleSubmit}>
           <label className="stack">
-            <span style={{ fontWeight: 600 }}>Anonymised client reference</span>
-            <input disabled={isSubmitting} value={form.client_reference} onChange={(event) => setForm({ ...form, client_reference: event.target.value })} placeholder="ANON-004" />
+            <span style={{ fontWeight: 600 }}>Linked client</span>
+            <select aria-describedby="client-selector-help" disabled={isSubmitting || clientLoadState === 'loading'} value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })}>
+              <option value="">No linked client</option>
+              {clients.map((client) => <option key={client.id} value={client.id}>{client.display_name}{client.external_reference ? ` — ${client.external_reference}` : ''}</option>)}
+            </select>
           </label>
+          <div id="client-selector-help" className="form-hint">
+            {clientLoadState === 'loading' ? 'Loading active clients…' : clientLoadState === 'error' ? <span role="status">Clients could not be loaded. Anonymous analysis remains available.</span> : clients.length === 0 ? 'No active clients yet. Anonymous analysis remains available.' : 'The backend resolves the selected client reference.'}
+            {' '}<Link to="/clients">Manage clients</Link>
+          </div>
           <label className="stack">
             <span style={{ fontWeight: 600 }}>Analysis period</span>
             <input disabled={isSubmitting} value={form.analysis_period} onChange={(event) => setForm({ ...form, analysis_period: event.target.value })} placeholder="Week 13" />
@@ -67,8 +88,8 @@ Client: ...
 Coach: ..." />
           </label>
           <div className="stack">
-            <span style={{ fontWeight: 600 }}>Engine mode</span>
-            <select disabled={isSubmitting} value={form.engine_mode} onChange={(event) => setForm({ ...form, engine_mode: event.target.value as 'auto' | 'llm' | 'deterministic' })}>
+            <label htmlFor="analysis-engine-mode" style={{ fontWeight: 600 }}>Engine mode</label>
+            <select id="analysis-engine-mode" disabled={isSubmitting} value={form.engine_mode} onChange={(event) => setForm({ ...form, engine_mode: event.target.value as 'auto' | 'llm' | 'deterministic' })}>
               <option value="auto">Auto (uses deterministic fallback when needed)</option>
               <option value="deterministic">Deterministic</option>
               <option value="llm">LLM</option>

@@ -1,43 +1,4 @@
-import type { AuditEntry, ClientRecord, ReviewItem } from '../types';
-
-export const clients: ClientRecord[] = [
-  {
-    id: 'anon-001',
-    reference: 'ANON-001',
-    attention: 'High',
-    engagement: 'Active',
-    period: 'Week 12',
-    reviews: 3,
-    nextAction: 'Review fatigue escalation',
-    coach: 'Mina R.',
-    updatedAt: '2h ago',
-    fallback: true,
-  },
-  {
-    id: 'anon-002',
-    reference: 'ANON-002',
-    attention: 'Elevated',
-    engagement: 'Watch',
-    period: 'Week 11',
-    reviews: 1,
-    nextAction: 'Confirm meal plan',
-    coach: 'Ari L.',
-    updatedAt: '5h ago',
-    fallback: false,
-  },
-  {
-    id: 'anon-003',
-    reference: 'ANON-003',
-    attention: 'Steady',
-    engagement: 'Needs support',
-    period: 'Week 10',
-    reviews: 2,
-    nextAction: 'Re-engage with routine',
-    coach: 'Jonas P.',
-    updatedAt: 'Yesterday',
-    fallback: false,
-  },
-];
+import type { AuditEntry, ReviewItem } from '../types';
 
 export const reviewQueue: ReviewItem[] = [
   {

@@ -9,6 +9,7 @@ import SettingsPage from './routes/SettingsPage';
 import ClientWorkspacePage from './routes/ClientWorkspacePage';
 import AnalysesPage from './routes/AnalysesPage';
 import AnalysisDetailPage from './routes/AnalysisDetailPage';
+import ActionsPage from './routes/ActionsPage';
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
         <Route path="/clients/:clientId" element={<ClientWorkspacePage />} />
         <Route path="/analyses" element={<AnalysesPage />} />
         <Route path="/analyses/:analysisId" element={<AnalysisDetailPage />} />
+        <Route path="/actions" element={<ActionsPage />} />
         <Route path="/new-analysis" element={<NewAnalysisPage />} />
         <Route path="/review-queue" element={<ReviewQueuePage />} />
         <Route path="/audit" element={<AuditPage />} />

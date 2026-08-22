@@ -1,13 +1,15 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AnalysisReviewConflictError,
   getAnalysis,
+  listAnalysisActions,
+  materializeAnalysisActions,
   updateAnalysisReview,
 } from '../services/api';
-import type { PersistedAnalysisResponse } from '../types';
+import type { ActionItem, PersistedAnalysisResponse } from '../types';
 import AnalysisDetailPage from './AnalysisDetailPage';
 
 vi.mock('../services/api', async (importOriginal) => {
@@ -15,11 +17,15 @@ vi.mock('../services/api', async (importOriginal) => {
   return {
     ...original,
     getAnalysis: vi.fn(),
+    listAnalysisActions: vi.fn(),
+    materializeAnalysisActions: vi.fn(),
     updateAnalysisReview: vi.fn(),
   };
 });
 
 const mockedGetAnalysis = vi.mocked(getAnalysis);
+const mockedListAnalysisActions = vi.mocked(listAnalysisActions);
+const mockedMaterialize = vi.mocked(materializeAnalysisActions);
 const mockedUpdateAnalysisReview = vi.mocked(updateAnalysisReview);
 const analysisId = '00000000-0000-4000-8000-000000000001';
 
@@ -42,6 +48,7 @@ const finding = {
 };
 
 const analysis: PersistedAnalysisResponse = {
+  client_id: null,
   analysis_id: analysisId,
   status: 'completed',
   created_at: '2026-01-01T10:30:00Z',
@@ -99,6 +106,37 @@ function renderDetail(path = `/analyses/${analysisId}`) {
 afterEach(() => {
   vi.clearAllMocks();
 });
+
+describe('AnalysisDetailPage Action materialization', () => {
+  const approved = { ...analysis, review_status: 'approved' as const };
+  const persistedAction: ActionItem = { id: 'item-1', analysis_id: analysisId, client_id: null, source_action_id: 'action-follow-up', title: 'Contact the client', description: 'A stored rationale.', priority: 1, status: 'open', linked_finding_ids: ['finding-sleep'], due_at: null, completed_at: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
+
+  it('shows recommendations but gates unapproved materialization', async () => {
+    mockedGetAnalysis.mockResolvedValue(analysis); renderDetail();
+    expect(await screen.findByText(/Approve this analysis before creating operational Action Items/)).toBeInTheDocument();
+    expect(screen.getByText('Contact the client for follow-up.')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(mockedMaterialize).not.toHaveBeenCalled();
+  });
+  it('loads existing Actions by source ID and prevents reselection', async () => {
+    mockedGetAnalysis.mockResolvedValue(approved); mockedListAnalysisActions.mockResolvedValue({ items: [persistedAction], offset: 0, limit: 100, returned_count: 1 }); renderDetail();
+    expect(await screen.findByText(/Operational Action Item created/)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+  it('submits only explicitly selected source IDs and updates local state', async () => {
+    mockedGetAnalysis.mockResolvedValue(approved); mockedMaterialize.mockResolvedValue({ analysis_id: analysisId, items: [persistedAction], created_count: 1, existing_count: 0 }); renderDetail();
+    const user = userEvent.setup(); const submit = await screen.findByRole('button', { name: 'Create selected actions' }); expect(submit).toBeDisabled();
+    await user.click(screen.getByRole('checkbox')); await user.click(submit);
+    expect(mockedMaterialize).toHaveBeenCalledWith(analysisId, { source_action_ids: ['action-follow-up'] });
+    expect(await screen.findByText(/1 Action Item created/)).toBeInTheDocument(); expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+  it('approval alone never materializes an Action Item', async () => {
+    mockedGetAnalysis.mockResolvedValue(analysis); mockedUpdateAnalysisReview.mockResolvedValue({ analysis_id: analysisId, review_status: 'approved', review_note: null, reviewed_at: '2026-01-02T00:00:00Z', review_version: 2 }); renderDetail();
+    const user = userEvent.setup(); await user.click(await screen.findByRole('button', { name: 'Approve analysis' }));
+    expect(await screen.findByRole('checkbox')).toBeInTheDocument(); expect(mockedMaterialize).not.toHaveBeenCalled();
+  });
+});
+beforeEach(() => mockedListAnalysisActions.mockResolvedValue({ items: [], offset: 0, limit: 100, returned_count: 0 }));
 
 describe('AnalysisDetailPage', () => {
   it('announces the loading state', () => {
