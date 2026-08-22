@@ -7,12 +7,14 @@ import pytest
 from backend.app.core.config import settings
 from backend.app.prompts.client_intelligence import SYSTEM_PROMPT
 from backend.app.schemas.client_intelligence import AnalysisRequest
+from backend.app.schemas.client_intelligence import FindingClassification, RiskSeverity
 from backend.app.schemas.llm_analysis import LLMAnalysisDraft
 from backend.app.services import intelligence_orchestrator as orchestrator
 from backend.app.services.analysis_service import parse_conversation
 from backend.app.services.groq_intelligence_service import (
     IntelligenceProviderError,
     analyse_with_groq,
+    groq_transport_schema,
 )
 
 
@@ -135,6 +137,64 @@ def test_generated_schema_requires_every_property_and_forbids_extras() -> None:
             assert set(item["required"]) == set(item["properties"])
 
 
+def _walk_schema(value: object):
+    yield value
+    if isinstance(value, dict):
+        for mapping_name in ("$defs", "properties"):
+            for child in value.get(mapping_name, {}).values():
+                yield from _walk_schema(child)
+        if "items" in value:
+            yield from _walk_schema(value["items"])
+        for child in value.get("anyOf", []):
+            yield from _walk_schema(child)
+
+
+def _resolve_local_ref(schema: dict[str, object], reference: str) -> object:
+    assert reference.startswith("#/")
+    target: object = schema
+    for part in reference[2:].split("/"):
+        target = target[part.replace("~1", "/").replace("~0", "~")]
+    return target
+
+
+def test_transport_schema_strips_annotations_and_preserves_strict_objects() -> None:
+    schema = groq_transport_schema()
+    for node in _walk_schema(schema):
+        if not isinstance(node, dict):
+            continue
+        assert not ({"title", "default", "examples", "$schema"} & node.keys())
+        if node.get("type") == "object":
+            assert "properties" in node
+            assert node.get("additionalProperties") is False
+            assert set(node.get("required", [])) == set(node["properties"])
+
+
+def test_transport_schema_refs_enums_and_numeric_bounds_are_preserved() -> None:
+    schema = groq_transport_schema()
+    references = [
+        node["$ref"]
+        for node in _walk_schema(schema)
+        if isinstance(node, dict) and "$ref" in node
+    ]
+    assert references
+    assert all(_resolve_local_ref(schema, reference) for reference in references)
+
+    definitions = schema["$defs"]
+    assert set(definitions["FindingClassification"]["enum"]) == {
+        item.value for item in FindingClassification
+    }
+    assert set(definitions["RiskSeverity"]["enum"]) == {
+        item.value for item in RiskSeverity
+    }
+    finding = definitions["LLMEvidenceBackedFinding"]["properties"]
+    risk = definitions["LLMRiskFlag"]["properties"]
+    action = definitions["LLMCoachAction"]["properties"]
+    assert finding["confidence"]["minimum"] == risk["confidence"]["minimum"] == 0
+    assert finding["confidence"]["maximum"] == risk["confidence"]["maximum"] == 1
+    assert action["priority"]["minimum"] == 1
+    assert action["priority"]["maximum"] == 5
+
+
 def test_valid_draft_materializes_evidence_actions_and_ignores_reasoning() -> None:
     response = analyse_with_groq(
         request_payload(), parse_conversation(CONVERSATION), transport=successful_transport()
@@ -164,6 +224,26 @@ def test_http_failures_are_sanitized(status: int) -> None:
         analyse_with_groq(request_payload(), parse_conversation(CONVERSATION), transport=transport)
     assert str(raised.value) == "The intelligence provider is unavailable."
     assert "test-secret-key" not in str(raised.value)
+
+
+def test_http_400_has_safe_bad_request_diagnostics() -> None:
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            400,
+            json={"error": {"message": "raw provider payload test-secret-key"}},
+        )
+    )
+    with pytest.raises(IntelligenceProviderError) as raised:
+        analyse_with_groq(
+            request_payload(),
+            parse_conversation(CONVERSATION),
+            transport=transport,
+        )
+    assert raised.value.category == "bad_request"
+    assert raised.value.status_code == 400
+    assert str(raised.value) == "The intelligence provider is unavailable."
+    assert "test-secret-key" not in str(raised.value)
+    assert "raw provider payload" not in str(raised.value)
 
 
 @pytest.mark.parametrize("error", [httpx.ReadTimeout("slow"), httpx.ConnectError("offline")])

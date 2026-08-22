@@ -26,6 +26,58 @@ from backend.app.services.evidence_verifier import (
 class IntelligenceProviderError(RuntimeError):
     """Sanitized failure at the external inference boundary."""
 
+    def __init__(
+        self,
+        message: str = "The intelligence provider is unavailable.",
+        *,
+        category: str = "invalid_response",
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.status_code = status_code
+
+
+GROQ_SCHEMA_KEYWORDS = {
+    "$defs",
+    "$ref",
+    "additionalProperties",
+    "anyOf",
+    "description",
+    "enum",
+    "items",
+    "maximum",
+    "minimum",
+    "properties",
+    "required",
+    "type",
+}
+
+
+def _normalize_groq_schema_node(value: object) -> object:
+    if isinstance(value, list):
+        return [_normalize_groq_schema_node(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    normalized: dict[str, object] = {}
+    for keyword, child in value.items():
+        if keyword not in GROQ_SCHEMA_KEYWORDS:
+            continue
+        if keyword in {"$defs", "properties"}:
+            normalized[keyword] = {
+                name: _normalize_groq_schema_node(schema)
+                for name, schema in child.items()
+            }
+        else:
+            normalized[keyword] = _normalize_groq_schema_node(child)
+    return normalized
+
+
+def groq_transport_schema() -> dict[str, object]:
+    """Return the constrained JSON Schema sent to Groq structured outputs."""
+    return _normalize_groq_schema_node(LLMAnalysisDraft.model_json_schema())
+
 
 def _build_canonical_messages(parsed_messages: list[dict[str, str]]) -> str:
     return "\n".join(
@@ -144,7 +196,7 @@ def _request_body(
             "json_schema": {
                 "name": "llm_analysis_draft",
                 "strict": True,
-                "schema": LLMAnalysisDraft.model_json_schema(),
+                "schema": groq_transport_schema(),
             },
         },
     }
@@ -182,8 +234,28 @@ def _request_draft(
             return LLMAnalysisDraft.model_validate(json.loads(content))
     except IntelligenceProviderError:
         raise
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as error:
-        raise IntelligenceProviderError("The intelligence provider is unavailable.") from error
+    except httpx.TimeoutException as error:
+        raise IntelligenceProviderError(category="timeout") from error
+    except httpx.NetworkError as error:
+        raise IntelligenceProviderError(category="network") from error
+    except httpx.HTTPStatusError as error:
+        status_code = error.response.status_code
+        if status_code in {401, 403}:
+            category = "authentication"
+        elif status_code == 429:
+            category = "rate_limit"
+        elif status_code == 400:
+            category = "bad_request"
+        elif status_code >= 500:
+            category = "server_error"
+        else:
+            category = "invalid_response"
+        raise IntelligenceProviderError(
+            category=category,
+            status_code=status_code,
+        ) from error
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as error:
+        raise IntelligenceProviderError(category="invalid_response") from error
 
 
 def analyse_with_groq(
