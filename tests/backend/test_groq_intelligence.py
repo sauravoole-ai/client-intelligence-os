@@ -246,6 +246,162 @@ def test_http_400_has_safe_bad_request_diagnostics() -> None:
     assert "raw provider payload" not in str(raised.value)
 
 
+def test_json_validate_failed_retries_then_materializes_valid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ai_max_retries", 1)
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "json_validate_failed",
+                        "failed_generation": "private invalid generation",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps(draft_payload())}}
+                ]
+            },
+        )
+
+    response = analyse_with_groq(
+        request_payload(),
+        parse_conversation(CONVERSATION),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert calls == 2
+    assert response.engine == "groq:openai/gpt-oss-20b"
+    assert len(response.findings) == len(CATEGORIES)
+    assert response.findings[0].evidence[0].message_id == "msg-001"
+
+
+def test_generic_http_400_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "ai_max_retries", 2)
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            400,
+            json={"error": {"type": "invalid_request_error", "code": "bad_request"}},
+        )
+
+    with pytest.raises(IntelligenceProviderError) as raised:
+        analyse_with_groq(
+            request_payload(),
+            parse_conversation(CONVERSATION),
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert calls == 1
+    assert raised.value.category == "bad_request"
+    assert raised.value.status_code == 400
+
+
+def test_json_validate_failed_with_different_error_type_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ai_max_retries", 2)
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            400,
+            json={"error": {"type": "other_error", "code": "json_validate_failed"}},
+        )
+
+    with pytest.raises(IntelligenceProviderError) as raised:
+        analyse_with_groq(
+            request_payload(),
+            parse_conversation(CONVERSATION),
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert calls == 1
+    assert raised.value.category == "bad_request"
+    assert raised.value.status_code == 400
+
+
+def test_json_validate_failed_obeys_retry_budget_and_stays_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "ai_max_retries", 2)
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "json_validate_failed",
+                    "failed_generation": "private generation must not escape",
+                }
+            },
+        )
+
+    with pytest.raises(IntelligenceProviderError) as raised:
+        analyse_with_groq(
+            request_payload(),
+            parse_conversation(CONVERSATION),
+            transport=httpx.MockTransport(handler),
+        )
+
+    assert calls == 3
+    assert raised.value.category == "structured_output_generation"
+    assert raised.value.status_code == 400
+    assert str(raised.value) == "The intelligence provider is unavailable."
+
+
+def test_failed_generation_is_not_retained_or_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(settings, "ai_max_retries", 0)
+    marker = "private-failed-generation-marker"
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "json_validate_failed",
+                    "failed_generation": marker,
+                }
+            },
+        )
+    )
+
+    with pytest.raises(IntelligenceProviderError) as raised:
+        analyse_with_groq(
+            request_payload(),
+            parse_conversation(CONVERSATION),
+            transport=transport,
+        )
+
+    assert marker not in str(raised.value)
+    assert marker not in repr(raised.value)
+    assert marker not in repr(vars(raised.value))
+    assert marker not in caplog.text
+    assert raised.value.__cause__ is None
+
+
 @pytest.mark.parametrize("error", [httpx.ReadTimeout("slow"), httpx.ConnectError("offline")])
 def test_transport_failures_are_sanitized(error: httpx.HTTPError) -> None:
     def fail(_: httpx.Request) -> httpx.Response:
