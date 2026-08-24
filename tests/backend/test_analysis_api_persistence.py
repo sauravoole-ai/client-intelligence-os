@@ -102,7 +102,7 @@ def test_automatic_fallback_metadata_is_persisted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, session_factory = persistence_client
-    monkeypatch.setattr(app_settings, "openai_api_key", None, raising=False)
+    monkeypatch.setattr(app_settings, "groq_api_key", None)
     monkeypatch.setattr(
         app_settings,
         "allow_deterministic_fallback",

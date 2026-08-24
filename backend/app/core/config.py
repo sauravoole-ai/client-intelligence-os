@@ -14,9 +14,10 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
     frontend_origin: str = "http://localhost:3000"
     database_url: str = "sqlite:///./client_intelligence.db"
-    ai_provider: str = "openai"
-    openai_api_key: str | None = None
-    openai_model: str = "gpt-5.6-luna"
+    ai_provider: str = "groq"
+    groq_api_key: str | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_model: str = "openai/gpt-oss-20b"
     ai_timeout_seconds: float = 60.0
     ai_max_retries: int = 2
     allow_deterministic_fallback: bool = True

@@ -1,9 +1,9 @@
 from backend.app.core.config import settings
 from backend.app.schemas.client_intelligence import AnalysisRequest, AnalysisResponse
 from backend.app.services.analysis_service import analyse_conversation, parse_conversation
-from backend.app.services.openai_intelligence_service import (
-    LLMAnalysisError,
-    analyse_with_openai,
+from backend.app.services.groq_intelligence_service import (
+    IntelligenceProviderError,
+    analyse_with_groq,
 )
 
 
@@ -11,8 +11,14 @@ class IntelligenceEngineError(RuntimeError):
     pass
 
 
-def _should_use_llm() -> bool:
-    return settings.environment == "production" and bool(settings.openai_api_key)
+def _provider_is_configured() -> bool:
+    return settings.ai_provider.lower() == "groq" and bool(settings.groq_api_key)
+
+
+def _run_provider(payload: AnalysisRequest, parsed_messages: list[dict[str, str]]) -> AnalysisResponse:
+    if settings.ai_provider.lower() != "groq":
+        raise IntelligenceProviderError("The intelligence provider is unavailable.")
+    return analyse_with_groq(payload, parsed_messages)
 
 
 def run_analysis(payload: AnalysisRequest) -> AnalysisResponse:
@@ -25,17 +31,16 @@ def run_analysis(payload: AnalysisRequest) -> AnalysisResponse:
 
     if payload.engine_mode == "llm":
         try:
-            if not _should_use_llm():
-                raise LLMAnalysisError("OpenAI service is not configured.")
-
-            return analyse_with_openai(payload, parsed_messages)
-        except (LLMAnalysisError, ValueError) as error:
+            if not _provider_is_configured():
+                raise IntelligenceProviderError("The intelligence provider is unavailable.")
+            return _run_provider(payload, parsed_messages)
+        except (IntelligenceProviderError, ValueError) as error:
             raise IntelligenceEngineError("The requested analysis service is unavailable.") from error
 
     if payload.engine_mode == "auto":
-        if _should_use_llm():
+        if _provider_is_configured():
             try:
-                return analyse_with_openai(payload, parsed_messages)
+                return _run_provider(payload, parsed_messages)
             except Exception:
                 if settings.allow_deterministic_fallback:
                     response = analyse_conversation(payload)

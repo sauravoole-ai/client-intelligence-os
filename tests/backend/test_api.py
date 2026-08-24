@@ -96,7 +96,7 @@ def test_rejects_unrecognised_conversation_format(client: TestClient) -> None:
 
 
 def test_auto_mode_without_api_key_uses_deterministic_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(app_settings, "openai_api_key", None, raising=False)
+    monkeypatch.setattr(app_settings, "groq_api_key", None)
     monkeypatch.setattr(app_settings, "allow_deterministic_fallback", True, raising=False)
 
     response = orchestrator.run_analysis(
@@ -116,7 +116,7 @@ def test_deterministic_mode_never_calls_llm(monkeypatch: pytest.MonkeyPatch) -> 
     def fail(*args: object, **kwargs: object) -> object:
         raise AssertionError("LLM should not be called")
 
-    monkeypatch.setattr(orchestrator, "analyse_with_openai", fail)
+    monkeypatch.setattr(orchestrator, "analyse_with_groq", fail)
 
     response = orchestrator.run_analysis(
         AnalysisRequest(
@@ -252,7 +252,7 @@ def test_llm_mode_without_configured_key_returns_http_503(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(app_settings, "openai_api_key", None, raising=False)
+    monkeypatch.setattr(app_settings, "groq_api_key", None)
     monkeypatch.setattr(app_settings, "allow_deterministic_fallback", False, raising=False)
 
     response = client.post(
