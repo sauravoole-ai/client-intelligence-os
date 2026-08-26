@@ -230,7 +230,7 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
   .app-shell__main { padding: 12px; }
   .page__header { align-items: flex-start; }
   .toolbar { width: 100%; }
-  .toolbar > * { width: 100%; }
+  .toolbar > :not(.sr-only) { width: 100%; }
   .client-card, .queue-card, .audit-card, .settings-card { align-items: flex-start; }
   .panel, .card { border-radius: 16px; }
   .review-sheet { align-items: end; padding: 0; }

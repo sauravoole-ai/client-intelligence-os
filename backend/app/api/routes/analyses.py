@@ -40,6 +40,13 @@ router = APIRouter()
 RETRIEVAL_ERROR_DETAIL = "The saved analysis could not be retrieved."
 
 
+def serialized_reviewed_at(reviewed_at: datetime | None) -> datetime | None:
+    """Restore the UTC invariant for the SQLite-backed review timestamp."""
+    if reviewed_at is not None and reviewed_at.tzinfo is None:
+        return reviewed_at.replace(tzinfo=timezone.utc)
+    return reviewed_at
+
+
 @router.post(
     "/analyses",
     response_model=AnalysisResponse,
@@ -126,7 +133,7 @@ def persisted_analysis_response(
         client_id=record.client_id,
         review_status=record.review_status,
         review_note=record.review_note,
-        reviewed_at=record.reviewed_at,
+        reviewed_at=serialized_reviewed_at(record.reviewed_at),
         review_version=record.review_version,
     )
 
@@ -136,7 +143,7 @@ def review_response(record: AnalysisRecord) -> AnalysisReviewResponse:
         analysis_id=record.id,
         review_status=record.review_status,
         review_note=record.review_note,
-        reviewed_at=record.reviewed_at,
+        reviewed_at=serialized_reviewed_at(record.reviewed_at),
         review_version=record.review_version,
     )
 

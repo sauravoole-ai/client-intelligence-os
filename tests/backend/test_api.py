@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -266,3 +267,37 @@ def test_llm_mode_without_configured_key_returns_http_503(
 
     assert response.status_code == 503
     assert "service" in response.json()["detail"].lower()
+
+
+def test_reviewed_timestamp_is_serialized_as_utc(client: TestClient) -> None:
+    created = client.post(
+        "/api/v1/analyses",
+        json={
+            "conversation": SAMPLE_CONVERSATION,
+            "client_reference": "ANON-UTC",
+        },
+    )
+
+    assert created.status_code == 201
+
+    reviewed = client.put(
+        f"/api/v1/analyses/{created.json()['analysis_id']}/review",
+        json={
+            "review_status": "approved",
+            "review_note": None,
+            "expected_version": 1,
+        },
+    )
+
+    assert reviewed.status_code == 200
+    reviewed_at = reviewed.json()["reviewed_at"]
+    assert reviewed_at.endswith("Z")
+
+    retrieved = client.get(f"/api/v1/analyses/{created.json()['analysis_id']}")
+
+    assert retrieved.status_code == 200
+    retrieved_reviewed_at = retrieved.json()["reviewed_at"]
+    assert retrieved_reviewed_at.endswith("Z")
+    assert datetime.fromisoformat(reviewed_at.replace("Z", "+00:00")) == datetime.fromisoformat(
+        retrieved_reviewed_at.replace("Z", "+00:00")
+    )

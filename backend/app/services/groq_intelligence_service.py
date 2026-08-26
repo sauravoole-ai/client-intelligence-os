@@ -202,6 +202,21 @@ def _request_body(
     }
 
 
+def _is_structured_output_generation_failure(response: httpx.Response) -> bool:
+    if response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("type") == "invalid_request_error"
+        and error.get("code") == "json_validate_failed"
+    )
+
+
 def _request_draft(
     payload: AnalysisRequest,
     parsed_messages: list[dict[str, str]],
@@ -220,7 +235,14 @@ def _request_draft(
             for attempt in range(attempts):
                 try:
                     response = client.post(endpoint, headers=headers, json=_request_body(payload, parsed_messages))
-                    if response.status_code not in {429, 500, 502, 503, 504} or attempt == attempts - 1:
+                    retryable_response = response.status_code in {
+                        429,
+                        500,
+                        502,
+                        503,
+                        504,
+                    } or _is_structured_output_generation_failure(response)
+                    if not retryable_response or attempt == attempts - 1:
                         break
                 except (httpx.TimeoutException, httpx.NetworkError):
                     if attempt == attempts - 1:
@@ -244,6 +266,8 @@ def _request_draft(
             category = "authentication"
         elif status_code == 429:
             category = "rate_limit"
+        elif _is_structured_output_generation_failure(error.response):
+            category = "structured_output_generation"
         elif status_code == 400:
             category = "bad_request"
         elif status_code >= 500:
@@ -253,7 +277,7 @@ def _request_draft(
         raise IntelligenceProviderError(
             category=category,
             status_code=status_code,
-        ) from error
+        ) from None
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError, ValidationError) as error:
         raise IntelligenceProviderError(category="invalid_response") from error
 
