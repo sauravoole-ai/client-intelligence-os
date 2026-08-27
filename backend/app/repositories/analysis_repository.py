@@ -69,6 +69,23 @@ def get_analysis_record(
         raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
 
 
+def get_analysis_for_workspace(
+    session: Session,
+    analysis_id: str,
+    workspace_id: str,
+) -> AnalysisRecord | None:
+    try:
+        return session.scalar(
+            select(AnalysisRecord).where(
+                AnalysisRecord.id == analysis_id,
+                AnalysisRecord.workspace_id == workspace_id,
+            )
+        )
+    except SQLAlchemyError as error:
+        session.rollback()
+        raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
+
+
 def list_analysis_records(
     session: Session,
     *,

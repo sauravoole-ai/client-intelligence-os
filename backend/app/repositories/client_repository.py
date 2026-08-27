@@ -50,6 +50,22 @@ def get_client_by_id(session: Session, client_id: str) -> ClientRecord | None:
         raise ClientRepositoryError("The client could not be retrieved.") from error
 
 
+def get_client_for_workspace(
+    session: Session,
+    client_id: str,
+    workspace_id: str,
+) -> ClientRecord | None:
+    try:
+        return session.scalar(
+            select(ClientRecord).where(
+                ClientRecord.id == client_id,
+                ClientRecord.workspace_id == workspace_id,
+            )
+        )
+    except SQLAlchemyError as error:
+        raise ClientRepositoryError("The client could not be retrieved.") from error
+
+
 def list_clients(
     session: Session,
     *,

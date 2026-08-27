@@ -102,6 +102,24 @@ def get_action_item(session: Session, action_id: str) -> ActionItemRecord | None
         ) from error
 
 
+def get_action_for_workspace(
+    session: Session,
+    action_id: str,
+    workspace_id: str,
+) -> ActionItemRecord | None:
+    try:
+        return session.scalar(
+            select(ActionItemRecord).where(
+                ActionItemRecord.id == action_id,
+                ActionItemRecord.workspace_id == workspace_id,
+            )
+        )
+    except SQLAlchemyError as error:
+        raise ActionItemPersistenceError(
+            "The action item could not be retrieved."
+        ) from error
+
+
 def list_action_items(
     session: Session,
     *,

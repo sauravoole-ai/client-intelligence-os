@@ -39,6 +39,9 @@ class ActionItemRecord(Base):
         nullable=True,
         index=True,
     )
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workspaces.id"), nullable=True, index=True
+    )
     source_action_id: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -73,5 +76,8 @@ class ActionItemRecord(Base):
         back_populates="action_items"
     )
     client: Mapped["ClientRecord | None"] = relationship(  # noqa: F821
+        back_populates="action_items"
+    )
+    workspace: Mapped["WorkspaceRecord | None"] = relationship(  # noqa: F821
         back_populates="action_items"
     )
