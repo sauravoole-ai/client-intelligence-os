@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, String, text
+from sqlalchemy import DateTime, ForeignKey, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.base import Base
@@ -17,6 +17,9 @@ class ClientRecord(Base):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     external_reference: Mapped[str | None] = mapped_column(
         String(255), nullable=True, unique=True
+    )
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workspaces.id"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(
         String(32),
@@ -39,4 +42,7 @@ class ClientRecord(Base):
     action_items: Mapped[list["ActionItemRecord"]] = relationship(  # noqa: F821
         back_populates="client",
         passive_deletes=True,
+    )
+    workspace: Mapped["WorkspaceRecord | None"] = relationship(  # noqa: F821
+        back_populates="clients"
     )

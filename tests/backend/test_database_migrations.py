@@ -15,6 +15,7 @@ BASELINE_REVISION = "0001_analysis_baseline"
 REVIEW_REVISION = "0002_analysis_review_fields"
 CLIENT_REVISION = "0003_client_foundation"
 ACTION_REVISION = "0004_action_items"
+ACCESS_CONTROL_REVISION = "0005_access_control_foundation"
 REVIEW_COLUMNS = {
     "review_status",
     "review_note",
@@ -102,9 +103,11 @@ def test_fresh_database_upgrades_to_review_head(tmp_path: Path) -> None:
     assert indexes == {
         "ix_analyses_client_id",
         "ix_analyses_client_reference",
+        "ix_analyses_reviewed_by_user_id",
         "ix_analyses_review_status",
+        "ix_analyses_workspace_id",
     }
-    assert current_revision == ACTION_REVISION
+    assert current_revision == ACCESS_CONTROL_REVISION
 
 
 def test_migrated_columns_match_current_orm_model(tmp_path: Path) -> None:
@@ -380,13 +383,15 @@ def test_action_migration_schema_preserves_existing_data_and_creates_no_actions(
     assert columns == {
         "id", "analysis_id", "client_id", "source_action_id", "title",
         "description", "priority", "status", "linked_finding_ids", "due_at",
-        "completed_at", "created_at", "updated_at", "version",
+        "completed_at", "created_at", "updated_at", "version", "workspace_id",
     }
     assert indexes == {
         "ix_action_items_analysis_id", "ix_action_items_client_id",
-        "ix_action_items_status",
+        "ix_action_items_status", "ix_action_items_workspace_id",
     }
-    assert {key["referred_table"] for key in foreign_keys} == {"analyses", "clients"}
+    assert {key["referred_table"] for key in foreign_keys} == {
+        "analyses", "clients", "workspaces"
+    }
     assert unique_constraints[0]["column_names"] == ["analysis_id", "source_action_id"]
     assert stored == (PRIVATE_CONVERSATION, "approved", "kept", 2)
     assert action_count == 0

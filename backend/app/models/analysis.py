@@ -22,6 +22,9 @@ class AnalysisRecord(Base):
         nullable=True,
         index=True,
     )
+    workspace_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("workspaces.id"), nullable=True, index=True
+    )
     conversation: Mapped[str] = mapped_column(Text, nullable=False)
     engine_mode_requested: Mapped[str] = mapped_column(String(32), nullable=False)
     engine_used: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -49,6 +52,9 @@ class AnalysisRecord(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
     review_version: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -57,6 +63,12 @@ class AnalysisRecord(Base):
     )
     client: Mapped["ClientRecord | None"] = relationship(  # noqa: F821
         back_populates="analyses"
+    )
+    workspace: Mapped["WorkspaceRecord | None"] = relationship(  # noqa: F821
+        back_populates="analyses"
+    )
+    reviewed_by_user: Mapped["UserRecord | None"] = relationship(  # noqa: F821
+        back_populates="reviewed_analyses"
     )
     action_items: Mapped[list["ActionItemRecord"]] = relationship(  # noqa: F821
         back_populates="analysis"
