@@ -13,6 +13,8 @@ from backend.app.api.routes import analyses as analyses_route
 from backend.app.api.routes import clients as clients_route
 from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
+from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
+from tests.backend.auth_helpers import authenticate_test_client
 from backend.app.models.analysis import AnalysisRecord
 from backend.app.models.client import ClientRecord
 from backend.app.repositories.client_repository import create_client, list_clients
@@ -42,7 +44,9 @@ def client_api(
             yield session
 
     app.dependency_overrides[get_db_session] = override
-    yield TestClient(app), factory
+    test_client = TestClient(app)
+    authenticate_test_client(test_client, factory)
+    yield test_client, factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -87,8 +91,8 @@ def test_list_is_deterministic_and_validates_pagination(client_api) -> None:
     with factory() as session:
         session.add_all(
             [
-                ClientRecord(id="00000000-0000-0000-0000-000000000001", display_name="One", external_reference=None, status="active", created_at=timestamp, updated_at=timestamp),
-                ClientRecord(id="00000000-0000-0000-0000-000000000002", display_name="Two", external_reference=None, status="active", created_at=timestamp, updated_at=timestamp),
+                    ClientRecord(id="00000000-0000-0000-0000-000000000001", display_name="One", external_reference=None, status="active", workspace_id=client._test_workspace_id, created_at=timestamp, updated_at=timestamp),
+                    ClientRecord(id="00000000-0000-0000-0000-000000000002", display_name="Two", external_reference=None, status="active", workspace_id=client._test_workspace_id, created_at=timestamp, updated_at=timestamp),
             ]
         )
         session.commit()
@@ -142,6 +146,9 @@ def test_create_route_commit_failure_rolls_back_and_sanitizes(monkeypatch) -> No
         yield session
 
     app.dependency_overrides[get_db_session] = override_session
+    principal = CurrentPrincipal("user", "workspace", "owner", "session", "token")
+    app.dependency_overrides[get_current_principal] = lambda: principal
+    app.dependency_overrides[require_csrf] = lambda: principal
     try:
         response = TestClient(app).post("/api/v1/clients", json={"display_name": "One"})
     finally:

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.core.config import settings as app_settings
 from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
+from tests.backend.auth_helpers import authenticate_test_client
 from backend.app.schemas.client_intelligence import AnalysisRequest, FindingClassification
 from backend.app.services.evidence_verifier import (
     EvidenceValidationError,
@@ -50,7 +51,9 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
             yield session
 
     app.dependency_overrides[get_db_session] = override_session
-    yield TestClient(app)
+    test_client = TestClient(app)
+    authenticate_test_client(test_client, session_factory)
+    yield test_client
     app.dependency_overrides.clear()
     engine.dispose()
 

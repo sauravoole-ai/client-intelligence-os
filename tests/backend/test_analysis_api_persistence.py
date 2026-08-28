@@ -12,6 +12,8 @@ from backend.app.api.routes import analyses as analyses_route
 from backend.app.core.config import settings as app_settings
 from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
+from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
+from tests.backend.auth_helpers import authenticate_test_client
 from backend.app.models.analysis import AnalysisRecord
 from backend.app.repositories.analysis_repository import AnalysisPersistenceError
 from backend.app.schemas.client_intelligence import AnalysisResponse
@@ -45,7 +47,9 @@ def persistence_client(
             yield session
 
     app.dependency_overrides[get_db_session] = override_session
-    yield TestClient(app), session_factory
+    test_client = TestClient(app)
+    authenticate_test_client(test_client, session_factory)
+    yield test_client, session_factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -179,6 +183,9 @@ def test_repository_failure_is_sanitized_and_rolled_back(
         raise AnalysisPersistenceError("private database detail")
 
     app.dependency_overrides[get_db_session] = override_session
+    principal = CurrentPrincipal("user", "workspace", "owner", "session", "token")
+    app.dependency_overrides[get_current_principal] = lambda: principal
+    app.dependency_overrides[require_csrf] = lambda: principal
     monkeypatch.setattr(analyses_route, "create_analysis_record", fail_persistence)
     try:
         response = TestClient(app).post(
@@ -208,6 +215,9 @@ def test_commit_failure_is_sanitized_and_rolled_back(
         yield session
 
     app.dependency_overrides[get_db_session] = override_session
+    principal = CurrentPrincipal("user", "workspace", "owner", "session", "token")
+    app.dependency_overrides[get_current_principal] = lambda: principal
+    app.dependency_overrides[require_csrf] = lambda: principal
     try:
         response = TestClient(app).post(
             "/api/v1/analyses",

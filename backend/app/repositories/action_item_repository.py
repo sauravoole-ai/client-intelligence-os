@@ -26,6 +26,7 @@ def materialize_action_items(
     *,
     analysis_id: str,
     client_id: str | None,
+    workspace_id: str,
     recommendations: list[CoachAction],
 ) -> tuple[list[ActionItemRecord], int, int]:
     source_ids = [item.action_id for item in recommendations]
@@ -50,6 +51,7 @@ def materialize_action_items(
                 id=str(uuid4()),
                 analysis_id=analysis_id,
                 client_id=client_id,
+                workspace_id=workspace_id,
                 source_action_id=recommendation.action_id,
                 title=recommendation.action,
                 description=recommendation.rationale,
@@ -149,6 +151,22 @@ def list_action_items(
         raise ActionItemPersistenceError(
             "The action items could not be retrieved."
         ) from error
+
+
+def list_actions_for_workspace(session: Session, *, workspace_id: str, status: str | None = None, client_id: str | None = None, analysis_id: str | None = None, offset: int = 0, limit: int = 20) -> list[ActionItemRecord]:
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("invalid pagination")
+    statement = select(ActionItemRecord).where(ActionItemRecord.workspace_id == workspace_id)
+    if status is not None:
+        statement = statement.where(ActionItemRecord.status == status)
+    if client_id is not None:
+        statement = statement.where(ActionItemRecord.client_id == client_id)
+    if analysis_id is not None:
+        statement = statement.where(ActionItemRecord.analysis_id == analysis_id)
+    try:
+        return list(session.scalars(statement.order_by(ActionItemRecord.created_at.desc(), ActionItemRecord.id.desc()).offset(offset).limit(limit)).all())
+    except SQLAlchemyError as error:
+        raise ActionItemPersistenceError("The action items could not be retrieved.") from error
 
 
 def update_action_status(

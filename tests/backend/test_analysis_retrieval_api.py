@@ -5,13 +5,15 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.api.routes import analyses as analyses_route
 from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
+from tests.backend.auth_helpers import authenticate_test_client
 from backend.app.models.analysis import AnalysisRecord
+from backend.app.models.workspace import WorkspaceRecord
 from backend.app.repositories.analysis_repository import (
     AnalysisPersistenceError,
     create_analysis_record,
@@ -51,7 +53,9 @@ def retrieval_client(
             yield session
 
     app.dependency_overrides[get_db_session] = override_session
-    yield TestClient(app), session_factory
+    test_client = TestClient(app)
+    authenticate_test_client(test_client, session_factory)
+    yield test_client, session_factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -78,6 +82,7 @@ def insert_analysis(
             analysis,
             PRIVATE_STORED_CONVERSATION,
             "deterministic",
+            workspace_id=session.scalar(select(WorkspaceRecord.id)),
         )
         session.commit()
 
@@ -99,6 +104,7 @@ def insert_invalid_analysis(
                 fallback_reason=None,
                 prompt_version="deterministic-baseline-v1",
                 created_at=datetime.now(timezone.utc),
+                workspace_id=session.scalar(select(WorkspaceRecord.id)),
             )
         )
         session.commit()
@@ -168,7 +174,7 @@ def test_detail_repository_failure_returns_sanitized_503(
     def fail_retrieval(*_: object) -> None:
         raise AnalysisPersistenceError("private database detail")
 
-    monkeypatch.setattr(analyses_route, "get_analysis_record", fail_retrieval)
+    monkeypatch.setattr(analyses_route, "get_analysis_for_workspace", fail_retrieval)
     response = client.get(
         "/api/v1/analyses/00000000-0000-0000-0000-000000000001"
     )
@@ -301,7 +307,7 @@ def test_list_repository_failure_returns_sanitized_503(
     def fail_retrieval(*_: object, **__: object) -> None:
         raise AnalysisPersistenceError("private database detail")
 
-    monkeypatch.setattr(analyses_route, "list_analysis_records", fail_retrieval)
+    monkeypatch.setattr(analyses_route, "list_analyses_for_workspace", fail_retrieval)
     response = client.get("/api/v1/analyses")
 
     assert response.status_code == 503

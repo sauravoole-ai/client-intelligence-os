@@ -8,19 +8,20 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.db.session import get_db_session
+from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
 from backend.app.models.analysis import AnalysisRecord
 from backend.app.repositories.analysis_repository import (
     AnalysisNotFoundError,
     AnalysisPersistenceError,
     AnalysisReviewConflictError,
     create_analysis_record,
-    get_analysis_record,
-    list_analysis_records,
+    get_analysis_for_workspace,
+    list_analyses_for_workspace,
     update_analysis_review,
 )
 from backend.app.repositories.client_repository import (
     ClientRepositoryError,
-    get_client_by_id,
+    get_client_for_workspace,
 )
 from backend.app.schemas.client_intelligence import (
     AnalysisListResponse,
@@ -35,7 +36,7 @@ from backend.app.services.intelligence_orchestrator import (
     run_analysis,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_principal)])
 
 RETRIEVAL_ERROR_DETAIL = "The saved analysis could not be retrieved."
 
@@ -51,16 +52,18 @@ def serialized_reviewed_at(reviewed_at: datetime | None) -> datetime | None:
     "/analyses",
     response_model=AnalysisResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_csrf)],
 )
 def create_analysis(
     payload: AnalysisRequest,
+    principal: CurrentPrincipal = Depends(require_csrf),
     session: Session = Depends(get_db_session),
 ) -> AnalysisResponse:
     resolved_payload = payload
     resolved_client_id: str | None = None
     if payload.client_id is not None:
         try:
-            selected_client = get_client_by_id(session, str(payload.client_id))
+            selected_client = get_client_for_workspace(session, str(payload.client_id), principal.workspace_id)
         except ClientRepositoryError as error:
             session.rollback()
             raise HTTPException(
@@ -102,6 +105,7 @@ def create_analysis(
             payload.conversation,
             payload.engine_mode,
             resolved_client_id,
+            principal.workspace_id,
         )
         session.commit()
     except (AnalysisPersistenceError, SQLAlchemyError) as error:
@@ -154,11 +158,12 @@ def review_response(record: AnalysisRecord) -> AnalysisReviewResponse:
 )
 def list_analyses(
     session: Session = Depends(get_db_session),
+    principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AnalysisListResponse:
     try:
-        records = list_analysis_records(session, offset=offset, limit=limit)
+        records = list_analyses_for_workspace(session, workspace_id=principal.workspace_id, offset=offset, limit=limit)
     except AnalysisPersistenceError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -181,9 +186,10 @@ def list_analyses(
 def get_analysis(
     analysis_id: UUID,
     session: Session = Depends(get_db_session),
+    principal: CurrentPrincipal = Depends(get_current_principal),
 ) -> PersistedAnalysisResponse:
     try:
-        record = get_analysis_record(session, str(analysis_id))
+        record = get_analysis_for_workspace(session, str(analysis_id), principal.workspace_id)
     except AnalysisPersistenceError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -203,13 +209,17 @@ def get_analysis(
 @router.put(
     "/analyses/{analysis_id}/review",
     response_model=AnalysisReviewResponse,
+    dependencies=[Depends(require_csrf)],
 )
 def review_analysis(
     analysis_id: UUID,
     payload: AnalysisReviewRequest,
     session: Session = Depends(get_db_session),
+    principal: CurrentPrincipal = Depends(require_csrf),
 ) -> AnalysisReviewResponse:
     try:
+        if get_analysis_for_workspace(session, str(analysis_id), principal.workspace_id) is None:
+            raise AnalysisNotFoundError
         record = update_analysis_review(
             session,
             str(analysis_id),
@@ -217,6 +227,7 @@ def review_analysis(
             review_note=payload.review_note,
             expected_version=payload.expected_version,
             reviewed_at=datetime.now(timezone.utc),
+            reviewed_by_user_id=principal.user_id,
         )
         session.commit()
     except AnalysisNotFoundError as error:

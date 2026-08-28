@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.api.routes import actions as actions_route
 from backend.app.db.session import Base, get_db_session
 from backend.app.main import app
+from tests.backend.auth_helpers import authenticate_test_client
+from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
 from backend.app.models.action_item import ActionItemRecord
 from backend.app.repositories.action_item_repository import (
     ActionItemPersistenceError,
@@ -45,7 +47,11 @@ def action_api(
             yield session
 
     app.dependency_overrides[get_db_session] = override
-    yield TestClient(app), factory
+    test_client = TestClient(app)
+    authenticate_test_client(test_client, factory)
+    assert get_current_principal not in app.dependency_overrides
+    assert require_csrf not in app.dependency_overrides
+    yield test_client, factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -290,7 +296,14 @@ def test_materialization_commit_failure_rolls_back_and_sanitizes(
     def override():
         yield session
 
+    # This local MagicMock database isolates the commit-failure error branch; it
+    # cannot resolve a real persisted session, so the auth overrides are scoped
+    # to this request and cleared immediately below.
     app.dependency_overrides[get_db_session] = override
+    app.dependency_overrides[require_csrf] = lambda: CurrentPrincipal(
+        "user", "workspace", "owner", "session", "test-token"
+    )
+    app.dependency_overrides[get_current_principal] = app.dependency_overrides[require_csrf]
     try:
         response = TestClient(app).post(
             f"/api/v1/analyses/{analysis_record.id}/actions",
@@ -307,7 +320,7 @@ def test_repository_failure_is_sanitized_and_rolled_back(action_api, monkeypatch
     client, _ = action_api
     monkeypatch.setattr(
         actions_route,
-        "list_action_items",
+            "list_actions_for_workspace",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             ActionItemPersistenceError("private database detail")
         ),

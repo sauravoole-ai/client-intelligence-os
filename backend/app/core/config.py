@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,15 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
     frontend_origin: str = "http://localhost:3000"
+    app_origin: str = "http://localhost:3000"
+    auth0_domain: str | None = None
+    auth0_client_id: str | None = None
+    auth0_client_secret: str | None = None
+    auth_callback_url: str | None = None
+    auth_session_ttl_seconds: int = 28_800
+    auth_cookie_secure: bool = False
+    oidc_state_secret: str | None = None
+    csrf_secret: str | None = None
     database_url: str = "sqlite:///./client_intelligence.db"
     ai_provider: str = "groq"
     groq_api_key: str | None = None
@@ -22,6 +32,12 @@ class Settings(BaseSettings):
     ai_max_retries: int = 2
     allow_deterministic_fallback: bool = True
     prompt_version: str = "client-intelligence-v1"
+
+    @model_validator(mode="after")
+    def require_secure_auth_cookies_in_production(self) -> "Settings":
+        if self.environment.strip().lower() == "production" and not self.auth_cookie_secure:
+            raise ValueError("AUTH_COOKIE_SECURE must be true in production.")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),

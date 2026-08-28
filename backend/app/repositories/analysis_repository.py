@@ -30,12 +30,14 @@ def create_analysis_record(
     original_conversation: str,
     requested_engine_mode: str,
     client_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> AnalysisRecord:
     """Add and flush an analysis record; the caller retains final commit control."""
     record = AnalysisRecord(
         id=str(analysis.analysis_id),
         client_reference=analysis.client_reference,
         client_id=client_id,
+        workspace_id=workspace_id,
         conversation=original_conversation,
         engine_mode_requested=requested_engine_mode,
         engine_used=analysis.engine,
@@ -115,6 +117,18 @@ def list_analysis_records(
         raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
 
 
+def list_analyses_for_workspace(session: Session, *, workspace_id: str, offset: int = 0, limit: int = 20, client_id: str | None = None) -> list[AnalysisRecord]:
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("invalid pagination")
+    statement = select(AnalysisRecord).where(AnalysisRecord.workspace_id == workspace_id)
+    if client_id is not None:
+        statement = statement.where(AnalysisRecord.client_id == client_id)
+    try:
+        return list(session.scalars(statement.order_by(AnalysisRecord.created_at.desc(), AnalysisRecord.id.desc()).offset(offset).limit(limit)).all())
+    except SQLAlchemyError as error:
+        raise AnalysisPersistenceError(RETRIEVAL_ERROR_MESSAGE) from error
+
+
 def update_analysis_review(
     session: Session,
     analysis_id: str,
@@ -123,6 +137,7 @@ def update_analysis_review(
     review_note: str | None,
     expected_version: int,
     reviewed_at: datetime,
+    reviewed_by_user_id: str | None = None,
 ) -> AnalysisRecord:
     try:
         record = session.get(
@@ -149,6 +164,7 @@ def update_analysis_review(
                 review_status=review_status,
                 review_note=review_note,
                 reviewed_at=reviewed_at,
+                reviewed_by_user_id=reviewed_by_user_id,
                 review_version=AnalysisRecord.review_version + 1,
             )
         )

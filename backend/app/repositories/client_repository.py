@@ -21,12 +21,14 @@ def create_client(
     *,
     display_name: str,
     external_reference: str | None,
+    workspace_id: str | None = None,
 ) -> ClientRecord:
     now = datetime.now(timezone.utc)
     record = ClientRecord(
         id=str(uuid4()),
         display_name=display_name,
         external_reference=external_reference,
+        workspace_id=workspace_id,
         status="active",
         created_at=now,
         updated_at=now,
@@ -84,5 +86,22 @@ def list_clients(
     )
     try:
         return list(session.scalars(statement).all())
+    except SQLAlchemyError as error:
+        raise ClientRepositoryError("The clients could not be retrieved.") from error
+
+
+def list_clients_for_workspace(
+    session: Session, *, workspace_id: str, offset: int = 0, limit: int = 20
+) -> list[ClientRecord]:
+    if offset < 0:
+        raise ValueError("offset must be zero or greater")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    try:
+        return list(session.scalars(
+            select(ClientRecord).where(ClientRecord.workspace_id == workspace_id)
+            .order_by(ClientRecord.created_at.desc(), ClientRecord.id.desc())
+            .offset(offset).limit(limit)
+        ).all())
     except SQLAlchemyError as error:
         raise ClientRepositoryError("The clients could not be retrieved.") from error
