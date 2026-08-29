@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -33,16 +35,32 @@ class Settings(BaseSettings):
     allow_deterministic_fallback: bool = True
     prompt_version: str = "client-intelligence-v1"
 
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
+
     @model_validator(mode="after")
-    def require_secure_auth_cookies_in_production(self) -> "Settings":
-        if self.environment.strip().lower() == "production" and not self.auth_cookie_secure:
+    def require_production_security_configuration(self) -> "Settings":
+        if self.is_production and not self.auth_cookie_secure:
             raise ValueError("AUTH_COOKIE_SECURE must be true in production.")
+        if self.is_production:
+            try:
+                database_url = make_url(self.database_url)
+            except ArgumentError:
+                raise ValueError(
+                    "DATABASE_URL must use the PostgreSQL psycopg dialect in production."
+                ) from None
+            if database_url.drivername != "postgresql+psycopg":
+                raise ValueError(
+                    "DATABASE_URL must use the PostgreSQL psycopg dialect in production."
+                )
         return self
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
 
