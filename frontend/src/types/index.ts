@@ -163,6 +163,16 @@ export interface ClientAnalysisListResponse {
   returned_count: number;
 }
 
+export interface AuthenticatedSession {
+  user_id: string;
+  display_name: string | null;
+  email: string | null;
+  workspace_id: string;
+  workspace_name: string | null;
+  role: string;
+  csrf_token: string;
+}
+
 export interface ReviewItem {
   id: string;
   title: string;

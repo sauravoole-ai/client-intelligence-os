@@ -18,9 +18,44 @@ import type {
   RiskFlag,
   MaterializeActionsRequest,
   MaterializeActionsResponse,
+  AuthenticatedSession,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+
+type ApiAuthentication = {
+  csrfToken: string | null;
+  onUnauthorized: () => void;
+};
+
+let apiAuthentication: ApiAuthentication | null = null;
+
+export function configureApiAuthentication(authentication: ApiAuthentication) {
+  apiAuthentication = authentication;
+}
+
+export function clearApiAuthentication() {
+  apiAuthentication = null;
+}
+
+function isUnsafeMethod(method: string | undefined) {
+  return method !== undefined && !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase());
+}
+
+async function apiFetch(
+  path: string,
+  init: NonNullable<Parameters<typeof fetch>[1]> = {},
+  invalidateOnUnauthorized = true,
+) {
+  let headers = init.headers;
+  if (isUnsafeMethod(init.method) && apiAuthentication?.csrfToken) {
+    headers = new Headers(init.headers);
+    headers.set('X-CSRF-Token', apiAuthentication.csrfToken);
+  }
+  const response = await fetch(path, { ...init, credentials: 'same-origin', headers });
+  if (response.status === 401 && invalidateOnUnauthorized) apiAuthentication?.onUnauthorized();
+  return response;
+}
 
 export interface CreateAnalysisPayload {
   conversation: string;
@@ -39,6 +74,78 @@ function normalizeError(response: Response, fallback: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object';
+}
+
+function isAuthenticatedSession(value: unknown): value is AuthenticatedSession {
+  return isRecord(value)
+    && typeof value.user_id === 'string'
+    && (value.display_name === null || typeof value.display_name === 'string')
+    && (value.email === null || typeof value.email === 'string')
+    && typeof value.workspace_id === 'string'
+    && (value.workspace_name === null || typeof value.workspace_name === 'string')
+    && typeof value.role === 'string'
+    && typeof value.csrf_token === 'string';
+}
+
+export class AuthenticationRequiredError extends Error {
+  constructor() {
+    super('Authentication is required.');
+    this.name = 'AuthenticationRequiredError';
+  }
+}
+
+class AuthApiError extends Error {}
+
+export async function getAuthenticatedSession(timeoutMs = 15_000): Promise<AuthenticatedSession> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/auth/me`, { signal: controller.signal }, false);
+    if (response.status === 401) throw new AuthenticationRequiredError();
+    if (!response.ok) throw new AuthApiError('Unable to verify your session. Please retry.');
+    const data: unknown = await response.json();
+    if (!isAuthenticatedSession(data)) throw new AuthApiError('The authentication service returned an invalid response.');
+    return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new AuthApiError('Unable to verify your session. Please retry.');
+    }
+    if (error instanceof SyntaxError) {
+      throw new AuthApiError('The authentication service returned an invalid response.');
+    }
+    if (error instanceof AuthenticationRequiredError || error instanceof AuthApiError) throw error;
+    throw new AuthApiError('Unable to verify your session. Please retry.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export async function logout(timeoutMs = 15_000): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await apiFetch(`${API_BASE_URL}/auth/logout`, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+    if (response.status === 401) throw new AuthenticationRequiredError();
+    if (!response.ok) throw new AuthApiError('Unable to sign out. Please retry.');
+    const data: unknown = await response.json();
+    if (!isRecord(data) || data.status !== 'logged_out') {
+      throw new AuthApiError('The authentication service returned an invalid response.');
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new AuthApiError('Unable to sign out. Please retry.');
+    }
+    if (error instanceof SyntaxError) {
+      throw new AuthApiError('The authentication service returned an invalid response.');
+    }
+    if (error instanceof AuthenticationRequiredError || error instanceof AuthApiError) throw error;
+    throw new AuthApiError('Unable to sign out. Please retry.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -241,7 +348,7 @@ async function actionRequest<T>(path: string, validator: (value: unknown) => val
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
+    const response = await apiFetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
     if (!response.ok) {
       if (response.status === 409) throw conflict === 'status' ? new ActionStatusConflictError() : new ActionMaterializationConflictError();
       if (response.status === 404) throw new ActionApiError('The requested Action Item was not found.');
@@ -291,7 +398,7 @@ async function clientRequest<T>(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
+    const response = await apiFetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
     if (!response.ok) {
       if (response.status === 409) throw new ClientConflictError();
       if (response.status === 404) throw new Error('The requested client was not found.');
@@ -373,7 +480,7 @@ export async function createAnalysis(payload: CreateAnalysisPayload, timeoutMs =
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${API_BASE_URL}/analyses`, {
+    const response = await apiFetch(`${API_BASE_URL}/analyses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -408,7 +515,7 @@ export async function getAnalysis(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE_URL}/analyses/${encodeURIComponent(analysisId)}`,
       { signal: controller.signal },
     );
@@ -449,7 +556,7 @@ export async function updateAnalysisReview(
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE_URL}/analyses/${encodeURIComponent(analysisId)}/review`,
       {
         method: 'PUT',
@@ -516,7 +623,7 @@ export async function listAnalyses(
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(
+    const response = await apiFetch(
       `${API_BASE_URL}/analyses?offset=${offset}&limit=${limit}`,
       { signal: controller.signal },
     );

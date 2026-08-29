@@ -26,9 +26,30 @@ import {
   updateActionStatus,
 } from './api';
 
+type AuthApiContract = {
+  configureApiAuthentication: (options: {
+    csrfToken: string | null;
+    onUnauthorized: () => void;
+  }) => void;
+  clearApiAuthentication: () => void;
+  getAuthenticatedSession: () => Promise<{
+    user_id: string;
+    display_name: string | null;
+    email: string | null;
+    workspace_id: string;
+    workspace_name: string | null;
+    role: string;
+    csrf_token: string;
+  }>;
+  logout: () => Promise<void>;
+};
+
+const authApi = await import('./api') as typeof import('./api') & AuthApiContract;
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  authApi.clearApiAuthentication?.();
 });
 
 const finding = {
@@ -474,5 +495,76 @@ describe('action API', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...actionItem, linked_finding_ids: null }))); await expect(getAction('id')).rejects.toThrow('invalid response');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('private network'))); await expect(getAction('id')).rejects.toThrow('Unable to reach');
     vi.useFakeTimers(); vi.stubGlobal('fetch', vi.fn((...[, init]: Parameters<typeof fetch>) => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('private', 'AbortError')))))); const request = expect(getAction('id', 10)).rejects.toThrow('timed out'); await vi.advanceTimersByTimeAsync(10); await request;
+  });
+});
+
+describe('auth-aware API behavior', () => {
+  const session = {
+    user_id: 'user-1',
+    display_name: 'Ada Lovelace',
+    email: 'ada@example.com',
+    workspace_id: 'workspace-1',
+    workspace_name: 'Atlas Coaching',
+    role: 'owner',
+    csrf_token: 'csrf-for-current-session',
+  };
+
+  it('reads auth/me with same-origin credentials and never sends CSRF on GET', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(session));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(authApi.getAuthenticatedSession()).resolves.toEqual(session);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/auth/me',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).has('X-CSRF-Token')).toBe(false);
+  });
+
+  it('adds the in-memory session CSRF token to POST and PUT requests only', async () => {
+    authApi.configureApiAuthentication({ csrfToken: session.csrf_token, onUnauthorized: vi.fn() });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(clientResponse, 201))
+      .mockResolvedValueOnce(jsonResponse({ ...actionItem, status: 'completed', version: 2, completed_at: '2026-01-02T00:00:00Z' }))
+      .mockResolvedValueOnce(jsonResponse({ items: [], offset: 0, limit: 20, returned_count: 0 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createClient({ display_name: 'Ada Client' });
+    await updateActionStatus(actionItem.id, { status: 'completed', expected_version: 1 });
+    await listClients();
+
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
+    expect(new Headers(fetchMock.mock.calls[1][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
+    expect(new Headers(fetchMock.mock.calls[2][1].headers).has('X-CSRF-Token')).toBe(false);
+  });
+
+  it('invalidates on protected 401s but preserves the authenticated state for 403s', async () => {
+    const onUnauthorized = vi.fn();
+    authApi.configureApiAuthentication({ csrfToken: session.csrf_token, onUnauthorized });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 })));
+
+    await expect(listClients()).rejects.toThrow();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 403 })));
+    await expect(listClients()).rejects.toThrow();
+    expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it('posts logout with CSRF and does not report success when logout fails', async () => {
+    authApi.configureApiAuthentication({ csrfToken: session.csrf_token, onUnauthorized: vi.fn() });
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ status: 'logged_out' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(authApi.logout()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/auth/logout',
+      expect.objectContaining({ method: 'POST', credentials: 'same-origin' }),
+    );
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })));
+    await expect(authApi.logout()).rejects.toThrow();
   });
 });
