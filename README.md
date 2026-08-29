@@ -80,3 +80,18 @@ frontend/      React and TypeScript application
 tests/         Backend test suite
 prototype-v0/  Earlier application prototype
 ```
+## Production database operating requirement
+
+Before production accepts real client data, its PostgreSQL service must provide
+either managed automated backups with a tested restore capability or scheduled,
+encrypted off-site logical PostgreSQL backups with a documented restore test.
+The application does not provide or verify this backup capability.
+
+Run schema changes once before starting application workers:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.app.db.migrate
+```
+
+Production application startup performs read-only database, Alembic revision,
+and tenant-ownership preflights. It does not run migrations automatically.
