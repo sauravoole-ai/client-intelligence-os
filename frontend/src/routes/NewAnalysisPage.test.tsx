@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -59,7 +59,7 @@ function renderPage() {
 
 async function submitValidConversation() {
   const user = userEvent.setup();
-  await user.type(screen.getByLabelText('Conversation text'), validConversation);
+  fireEvent.change(screen.getByLabelText('Conversation text'), { target: { value: validConversation } });
   await user.click(screen.getByRole('button', { name: 'Submit analysis' }));
   return user;
 }

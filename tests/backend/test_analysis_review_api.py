@@ -15,6 +15,8 @@ from backend.app.api.routes import analyses as analyses_route
 from backend.app.db.base import Base
 from backend.app.db.session import get_db_session
 from backend.app.main import app
+from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
+from tests.backend.auth_helpers import authenticate_test_client
 from backend.app.models.analysis import AnalysisRecord
 from backend.app.repositories.analysis_repository import (
     AnalysisPersistenceError,
@@ -30,6 +32,12 @@ ANALYSIS_ID = "00000000-0000-4000-8000-000000000101"
 MISSING_ID = "00000000-0000-4000-8000-000000000999"
 PRIVATE_CONVERSATION = "Private original review conversation"
 REVIEW_UNAVAILABLE = {"detail": "The analysis review could not be saved."}
+
+
+def override_auth() -> None:
+    principal = CurrentPrincipal("user", "workspace", "owner", "session", "token")
+    app.dependency_overrides[get_current_principal] = lambda: principal
+    app.dependency_overrides[require_csrf] = lambda: principal
 
 
 def make_analysis() -> AnalysisResponse:
@@ -75,7 +83,12 @@ def review_client(
             yield session
 
     app.dependency_overrides[get_db_session] = override_session
-    yield TestClient(app), session_factory
+    test_client = TestClient(app)
+    _, workspace_id = authenticate_test_client(test_client, session_factory)
+    with session_factory() as session:
+        session.get(AnalysisRecord, ANALYSIS_ID).workspace_id = workspace_id
+        session.commit()
+    yield test_client, session_factory
     app.dependency_overrides.clear()
     engine.dispose()
 
@@ -159,6 +172,7 @@ def test_successful_route_mutation_commits_once(
         yield session
 
     app.dependency_overrides[get_db_session] = override_session
+    override_auth()
     monkeypatch.setattr(analyses_route, "update_analysis_review", lambda *args, **kwargs: record)
     try:
         response = put_review(TestClient(app))
@@ -181,6 +195,7 @@ def test_repository_failure_rolls_back_and_is_sanitized(
         raise AnalysisPersistenceError("private database detail")
 
     app.dependency_overrides[get_db_session] = override_session
+    override_auth()
     monkeypatch.setattr(analyses_route, "update_analysis_review", fail_update)
     try:
         response = put_review(TestClient(app))
@@ -229,6 +244,7 @@ def test_commit_failure_rolls_back_and_is_sanitized(
         yield session
 
     app.dependency_overrides[get_db_session] = override_session
+    override_auth()
     monkeypatch.setattr(analyses_route, "update_analysis_review", lambda *args, **kwargs: record)
     try:
         response = put_review(TestClient(app))

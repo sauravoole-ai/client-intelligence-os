@@ -10,25 +10,36 @@ import ClientWorkspacePage from './routes/ClientWorkspacePage';
 import AnalysesPage from './routes/AnalysesPage';
 import AnalysisDetailPage from './routes/AnalysisDetailPage';
 import ActionsPage from './routes/ActionsPage';
+import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { AuthGate } from './auth/AuthGate';
+
+function OperationalApp() {
+  const { signOut } = useAuth();
+  return (
+    <AuthGate>
+      {(session) => (
+        <AppShell session={session} onSignOut={signOut}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/overview" replace />} />
+            <Route path="/overview" element={<OverviewPage />} />
+            <Route path="/clients" element={<ClientsPage />} />
+            <Route path="/clients/:clientId" element={<ClientWorkspacePage />} />
+            <Route path="/analyses" element={<AnalysesPage />} />
+            <Route path="/analyses/:analysisId" element={<AnalysisDetailPage />} />
+            <Route path="/actions" element={<ActionsPage />} />
+            <Route path="/new-analysis" element={<NewAnalysisPage />} />
+            <Route path="/review-queue" element={<ReviewQueuePage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
+          </Routes>
+        </AppShell>
+      )}
+    </AuthGate>
+  );
+}
 
 function App() {
-  return (
-    <AppShell>
-      <Routes>
-        <Route path="/" element={<Navigate to="/overview" replace />} />
-        <Route path="/overview" element={<OverviewPage />} />
-        <Route path="/clients" element={<ClientsPage />} />
-        <Route path="/clients/:clientId" element={<ClientWorkspacePage />} />
-        <Route path="/analyses" element={<AnalysesPage />} />
-        <Route path="/analyses/:analysisId" element={<AnalysisDetailPage />} />
-        <Route path="/actions" element={<ActionsPage />} />
-        <Route path="/new-analysis" element={<NewAnalysisPage />} />
-        <Route path="/review-queue" element={<ReviewQueuePage />} />
-        <Route path="/audit" element={<AuditPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-      </Routes>
-    </AppShell>
-  );
+  return <AuthProvider><OperationalApp /></AuthProvider>;
 }
 
 export default App;

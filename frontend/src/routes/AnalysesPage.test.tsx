@@ -9,6 +9,19 @@ import AnalysesPage from './AnalysesPage';
 
 vi.mock('../services/api', () => ({
   listAnalyses: vi.fn(),
+  getAuthenticatedSession: vi.fn().mockResolvedValue({
+    user_id: 'user-1',
+    display_name: 'Ada Lovelace',
+    email: 'ada@example.com',
+    workspace_id: 'workspace-1',
+    workspace_name: 'Atlas Coaching',
+    role: 'owner',
+    csrf_token: 'csrf-for-this-session',
+  }),
+  configureApiAuthentication: vi.fn(),
+  clearApiAuthentication: vi.fn(),
+  logout: vi.fn(),
+  AuthenticationRequiredError: class AuthenticationRequiredError extends Error {},
 }));
 
 const mockedListAnalyses = vi.mocked(listAnalyses);
@@ -178,7 +191,7 @@ describe('AnalysesPage', () => {
     await waitFor(() => expect(mockedListAnalyses).toHaveBeenCalledWith({ offset: 0, limit: 20 }));
   });
 
-  it('adds Analyses to primary navigation', () => {
+  it('adds Analyses to primary navigation', async () => {
     mockedListAnalyses.mockResolvedValue(response([]));
     render(
       <MemoryRouter initialEntries={['/overview']}>
@@ -186,6 +199,6 @@ describe('AnalysesPage', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole('link', { name: /Analyses/i })).toHaveAttribute('href', '/analyses');
+    expect(await screen.findByRole('link', { name: /Analyses/i })).toHaveAttribute('href', '/analyses');
   });
 });

@@ -2,6 +2,7 @@ import React from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import IntelligenceNavigator from './IntelligenceNavigator';
+import type { AuthenticatedSession } from '../types';
 
 const navItems = [
   { to: '/overview', label: 'Overview' },
@@ -14,9 +15,19 @@ const navItems = [
   { to: '/settings', label: 'Settings' },
 ];
 
-function AppShell({ children }: { children: React.ReactNode }) {
+function AppShell({
+  children,
+  session,
+  onSignOut,
+}: {
+  children: React.ReactNode;
+  session: AuthenticatedSession;
+  onSignOut: () => Promise<void>;
+}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [navigatorOpen, setNavigatorOpen] = useState(false);
+  const [signOutBusy, setSignOutBusy] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
   const location = useLocation();
   const drawerRef = useRef<HTMLDivElement | null>(null);
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -58,6 +69,20 @@ function AppShell({ children }: { children: React.ReactNode }) {
     return active?.label ?? 'Workspace';
   }, [location.pathname]);
 
+  const accountName = session.display_name || session.email || 'Signed-in user';
+
+  const handleSignOut = async () => {
+    if (signOutBusy) return;
+    setSignOutBusy(true);
+    setSignOutError('');
+    try {
+      await onSignOut();
+    } catch (error) {
+      setSignOutError(error instanceof Error ? error.message : 'Unable to sign out. Please retry.');
+      setSignOutBusy(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <div className="app-shell__layout">
@@ -90,8 +115,8 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="card card--tight shell-card">
             <div className="eyebrow">Workspace</div>
-            <div className="shell-card__title">Northstar Coaching Group</div>
-            <div className="shell-card__meta">Global review queue • 6 pending • 3 high-attention cases</div>
+            <div className="shell-card__title">{session.workspace_name || 'Current workspace'}</div>
+            <div className="shell-card__meta">{accountName} • {session.role}</div>
           </div>
         </aside>
 
@@ -103,10 +128,15 @@ function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="toolbar" role="toolbar" aria-label="Workspace tools">
               <button className="secondary" onClick={() => setNavigatorOpen(true)}>Intelligence Navigator</button>
+              <div className="shell-account" aria-label="Current account">
+                <span>{accountName}</span>
+                <button className="secondary" type="button" disabled={signOutBusy} onClick={() => void handleSignOut()}>{signOutBusy ? 'Signing out…' : 'Sign out'}</button>
+              </div>
               <button ref={menuButtonRef} className="secondary mobile-menu-button" aria-label="Open navigation drawer" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
                 Menu
               </button>
             </div>
+            {signOutError ? <p className="shell-sign-out-error" role="alert">{signOutError}</p> : null}
           </header>
 
           {children}

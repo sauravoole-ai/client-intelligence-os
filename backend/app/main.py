@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from backend.app.api.router import api_router
 from backend.app.core.config import settings
@@ -22,6 +23,16 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+
+if settings.oidc_state_secret:
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.oidc_state_secret,
+        session_cookie="cio_oidc_transaction",
+        max_age=600,
+        same_site="lax",
+        https_only=settings.auth_cookie_secure,
+    )
 
 app.add_middleware(
     CORSMiddleware,
