@@ -19,6 +19,8 @@ MESSAGE_PATTERN = re.compile(
     r"^(Client|Coach|Accountability Coach):\s*(.+)$",
     re.IGNORECASE,
 )
+MAX_RECOGNIZED_MESSAGES = 250
+MAX_RECOGNIZED_MESSAGE_TEXT_LENGTH = 4_000
 
 
 def parse_conversation(conversation: str) -> list[dict[str, str]]:
@@ -53,6 +55,18 @@ def parse_conversation(conversation: str) -> list[dict[str, str]]:
         )
 
     return messages
+
+
+def validate_parsed_conversation(messages: list[dict[str, str]]) -> None:
+    if len(messages) > MAX_RECOGNIZED_MESSAGES:
+        raise ValueError(
+            f"Recognized message count exceeds {MAX_RECOGNIZED_MESSAGES}."
+        )
+    if any(len(message["text"]) > MAX_RECOGNIZED_MESSAGE_TEXT_LENGTH for message in messages):
+        raise ValueError(
+            "Recognized message length exceeds "
+            f"{MAX_RECOGNIZED_MESSAGE_TEXT_LENGTH}."
+        )
 
 
 def find_messages(

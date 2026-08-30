@@ -95,3 +95,38 @@ Run schema changes once before starting application workers:
 
 Production application startup performs read-only database, Alembic revision,
 and tenant-ownership preflights. It does not run migrations automatically.
+
+## Public perimeter deployment contract
+
+The application is designed for same-origin browser access behind a trusted TLS
+termination proxy:
+
+```text
+public HTTPS -> trusted platform/reverse proxy -> FastAPI
+```
+
+Production configuration must use explicit `TRUSTED_HOSTS`, an HTTPS
+`APP_ORIGIN`, and an HTTPS `AUTH_CALLBACK_URL`. The API rejects request bodies
+larger than `MAX_API_REQUEST_BODY_BYTES` (128 KiB by default), and analysis
+input also has transcript and field-level validation limits.
+
+The API does not parse raw forwarded headers. If Uvicorn proxy headers are
+enabled in a future production command, `--forwarded-allow-ips` must contain
+only verified proxy IP or network values from `TRUSTED_PROXY_IPS`; never use
+`--forwarded-allow-ips="*"` as a generic setting. Public HTTP-to-HTTPS
+redirects and HSTS belong at the TLS edge, not in FastAPI.
+
+Production disables FastAPI docs, ReDoc, and OpenAPI endpoints. The API adds
+defense-in-depth response headers, but it does not serve the built React HTML.
+The frontend delivery edge must test and enforce this CSP against the built
+application before launch:
+
+```text
+default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none';
+form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+connect-src 'self'; font-src 'self'
+```
+
+`/api/v1/health` is dependency-free liveness. `/api/v1/health/ready` verifies
+database reachability and should be restricted to platform/internal probes
+where the deployment edge supports that policy.

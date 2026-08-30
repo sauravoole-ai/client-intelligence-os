@@ -1,6 +1,10 @@
 from backend.app.core.config import settings
 from backend.app.schemas.client_intelligence import AnalysisRequest, AnalysisResponse
-from backend.app.services.analysis_service import analyse_conversation, parse_conversation
+from backend.app.services.analysis_service import (
+    analyse_conversation,
+    parse_conversation,
+    validate_parsed_conversation,
+)
 from backend.app.services.groq_intelligence_service import (
     IntelligenceProviderError,
     analyse_with_groq,
@@ -23,6 +27,7 @@ def _run_provider(payload: AnalysisRequest, parsed_messages: list[dict[str, str]
 
 def run_analysis(payload: AnalysisRequest) -> AnalysisResponse:
     parsed_messages = parse_conversation(payload.conversation)
+    validate_parsed_conversation(parsed_messages)
     if not parsed_messages:
         raise ValueError("No recognised Client, Coach or Accountability Coach messages were found.")
 
