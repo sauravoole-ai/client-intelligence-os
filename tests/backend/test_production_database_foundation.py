@@ -90,6 +90,9 @@ def test_psycopg_postgresql_url_uses_a_pre_ping_engine() -> None:
         environment="production",
         auth_cookie_secure=True,
         database_url="postgresql+psycopg://user:secret@db.example/client_intelligence",
+        app_origin="https://app.example.test",
+        auth_callback_url="https://app.example.test/api/v1/auth/callback",
+        trusted_hosts=["app.example.test"],
     )
 
     engine = database_session.create_database_engine(settings.database_url)

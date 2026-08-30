@@ -72,14 +72,16 @@ class CoachAction(BaseModel):
 class AnalysisRequest(BaseModel):
     conversation: str = Field(
         min_length=20,
+        max_length=32_000,
         description="An anonymised client-coach conversation.",
     )
     client_reference: str | None = Field(
         default=None,
+        max_length=255,
         description="An anonymised internal client reference.",
     )
     client_id: UUID | None = None
-    analysis_period: str | None = None
+    analysis_period: str | None = Field(default=None, max_length=255)
     engine_mode: Literal["auto", "llm", "deterministic"] = "auto"
 
 
