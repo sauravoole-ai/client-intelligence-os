@@ -89,7 +89,7 @@ unchanged for source, client, status, scheduling (`due_at`), completion time
 
 | Field | Type and constraint | Meaning |
 | --- | --- | --- |
-| `assignee_membership_id` | nullable UUID/string foreign key to `workspace_memberships.id`; indexed | The workspace membership currently assigned to the Action Item. |
+| `assignee_membership_id` | nullable `String(36)` foreign key to `workspace_memberships.id`, `ON DELETE RESTRICT`; indexed | The workspace membership currently assigned to the Action Item. |
 | `completion_outcome` | nullable text, maximum 2,000 characters after trimming | The concise human-entered outcome for the current completed state. |
 
 The Action Item response is expanded with both `assignee_membership_id` and a
@@ -110,15 +110,31 @@ and the Action Item against the Action Item's workspace. The membership must
 be active. Disabling a membership never clears its historical assignment or
 deletes its Action Items; open work with that assignment remains readable and
 is visibly inactive until a human clears or reassigns it. Clearing assignment
-sets `assignee_membership_id` to null.
+sets `assignee_membership_id` to null. Physical deletion of a membership with
+referencing Action Items is blocked; this preserves the historical membership
+identity and the inactive-assignee display.
 
 ## 10. Persistence contract
 
-The migration adds nullable `assignee_membership_id` with an index and a
-foreign key that preserves Action Item readability when a membership changes
-(the compatible referential action is `ON DELETE SET NULL`; normal membership
-disabling retains the ID). It adds nullable `completion_outcome` as text.
-Neither field receives a synthetic backfill; all existing rows remain null.
+The migration adds nullable `assignee_membership_id: String(36) | NULL`, an
+index on that referencing Action Item column, and a foreign key to
+`workspace_memberships.id` with explicit `ON DELETE RESTRICT` behavior. The
+restriction synchronously prevents physical deletion while one or more Action
+Items reference the membership; `RESTRICT` is the only permitted referential
+behavior for this relationship.
+It adds nullable `completion_outcome` as text. Neither field receives a
+synthetic backfill; all existing rows remain null.
+
+The existing workspace and status indexes remain the base indexes for
+workspace-scoped operational reads. The new assignee index supports the
+optional assignee filter; a foreign key does not create that referencing-column
+index. This concern adds no separate `due_at` index because no established
+query profile demonstrates its benefit.
+
+If a future member-administration feature genuinely needs to delete a
+membership referenced by Action Items, it must first use an explicit
+human-controlled reassignment or unassignment flow, or a separately designed
+archival/privacy workflow. That future behavior is outside this concern.
 
 `due_at`, `completed_at`, `status`, and `version` are existing fields and are
 not duplicated or replaced. `due_at` and `completed_at` continue to use the
@@ -141,7 +157,7 @@ and Slice 5B **MUTATION** admitted. Its body forbids extra fields and is:
 
 ```json
 {
-  "assignee_membership_id": "UUID or null",
+  "assignee_membership_id": "string membership ID or null",
   "due_at": "timezone-aware ISO-8601 instant or null",
   "expected_version": 1
 }
@@ -155,9 +171,12 @@ nonexistent, conditionally updates the row for `expected_version`, increments
 the existing `version` once on success, and returns the expanded Action Item.
 Clearing either assignment or due date is allowed.
 
-`due_at` must include an offset or `Z`; a malformed or timezone-naive value is
-a validation error. The server stores the supplied instant and never derives a
-due date from an AI result or browser timezone.
+`assignee_membership_id` is an API string identifier validated using the
+repository's existing 36-character membership-ID convention; it does not
+change the `String(36)` database representation. `due_at` must include an
+offset or `Z`; a malformed or timezone-naive value is a validation error. The
+server stores the supplied instant and never derives a due date from an AI
+result or browser timezone.
 
 ### Status and completion mutation
 
@@ -210,13 +229,18 @@ offset calendar parameter.
 
 For `due_today` and `upcoming`, the frontend obtains the viewer timezone from
 `Intl.DateTimeFormat().resolvedOptions().timeZone` and sends it as `time_zone`.
-The server validates it as a supported IANA timezone and derives the two local
-calendar boundaries in that zone, then compares stored instants against their
-corresponding absolute instants. Missing, invalid, unsupported, or fixed-offset
-`time_zone` values receive the framework's `422` validation response. Calendar
-timezone affects only queue boundaries and due-date display; it never affects
-authorization, workspace selection, assignment validation, stored `due_at`,
-ownership, concurrency, or rate-limiter identity.
+The server resolves it with the Python standard-library `zoneinfo.ZoneInfo`
+resolver and derives the two local calendar boundaries in that zone, then
+compares stored instants against their corresponding absolute instants. The
+future implementation must declare the first-party `tzdata` package as an
+explicit backend runtime dependency. `zoneinfo` can otherwise rely on operating
+system timezone data that is not reliably present on Windows development hosts
+or minimal deployment images. Missing, invalid, unsupported, or fixed-offset
+`time_zone` values, including `ZoneInfoNotFoundError` or an equivalent resolver
+failure, receive the documented `422` validation response rather than a server
+error. Calendar timezone affects only queue boundaries and due-date display; it
+never affects authorization, workspace selection, assignment validation, stored
+`due_at`, ownership, concurrency, or rate-limiter identity.
 
 The UI displays due instants in the same viewer timezone. When a human enters
 a due date and time, the frontend converts that choice to a timezone-aware
@@ -231,8 +255,10 @@ Completion is current-state data, not hidden lifecycle history.
   into `completed`, the server sets `completed_at` to its current UTC instant
   and stores the trimmed outcome.
 * A request that keeps an Action Item in `completed` also requires a valid
-  non-empty outcome; it replaces the current outcome and retains the existing
-  `completed_at`.
+  non-empty outcome. If its normalized value differs from the stored outcome,
+  it is a real conditional mutation: it retains `completed_at`, increments
+  `version` once, and requires a matching `expected_version`. If its normalized
+  value is unchanged, it is an idempotent no-op.
 * A request whose target status is `open`, `in_progress`, or `dismissed` must
   omit `completion_outcome` or send null. The server clears both
   `completed_at` and `completion_outcome`, including when transitioning away
@@ -241,17 +267,26 @@ Completion is current-state data, not hidden lifecycle history.
   authenticated request supplies the outcome. Re-completing later creates a
   new server completion instant and a new required outcome.
 
-Every successful status mutation increments `version` once, including a valid
-same-status update, preserving the existing conditional-write behavior.
+* A pure same-status request that changes no lifecycle field is idempotent: it
+  returns the current Action Item, does not increment `version`, and does not
+  alter timestamps. The required `expected_version` remains part of the
+  request, but its staleness does not turn this no-op into a conflict, matching
+  current repository behavior.
+
+Every real lifecycle mutation, including a changed completion outcome while
+remaining completed, conditionally checks `expected_version` and increments
+`version` exactly once. A stale real mutation returns `409`.
 
 ## 15. Optimistic concurrency
 
-Both mutation bodies require `expected_version >= 1`. Each update is conditional
-on the Action Item ID, scoped workspace, and current version. A valid
-authorized request whose version is stale returns `409` with the existing
-non-sensitive conflict message and does not overwrite the row. The frontend
-must refetch or prompt the human to reload and must not retry by replacing the
-server state automatically.
+Both mutation bodies require `expected_version >= 1`. Each real update is
+conditional on the Action Item ID, scoped workspace, and current version. A
+valid authorized request whose version is stale returns `409` with the existing
+non-sensitive conflict message and does not overwrite the row. The sole
+exception is the defined pure status no-op, which returns the current row
+without changing it even when its supplied version is stale. The frontend must
+refetch or prompt the human to reload after `409` and must not retry by
+replacing server state automatically.
 
 ## 16. Human-control invariants
 
@@ -297,6 +332,7 @@ alter authorization, tenant selection, or limiter identity.
 | malformed or timezone-naive `due_at` | `422` schema validation response |
 | missing `time_zone` for `due_today` or `upcoming` | `422` validation response |
 | invalid, unsupported, or fixed-offset `time_zone` | `422` validation response |
+| `ZoneInfoNotFoundError` or equivalent requested-zone resolution failure | `422` validation response |
 | completed target without a valid outcome | `422` validation response |
 | non-completed target with a non-null outcome | `422` validation response |
 | unauthenticated or CSRF-invalid mutation | existing authentication or CSRF response |
@@ -330,24 +366,32 @@ charts, dashboard expansion, or broad visual redesign is included.
 
 ## 20. Migration and backfill expectations
 
-A later implementation migration adds only the two new nullable Action Item
-fields and the assignee index/foreign key described here. It does not backfill
-assignees or outcomes, alter existing `due_at`, `completed_at`, `status`, or
-`version` values, create workspace timezone data, or delete Action Items.
+A later implementation migration adds only nullable `String(36)`
+`assignee_membership_id` with its indexed, restrictive foreign key and nullable
+`completion_outcome`. It does not backfill assignees or outcomes, alter
+existing `due_at`, `completed_at`, `status`, or `version` values, create
+workspace timezone data, or delete Action Items. The later implementation also
+adds `tzdata` explicitly to the backend runtime dependency manifest, following
+the repository's existing dependency-version policy; it does not install or
+use a third-party timezone library.
 
 ## 21. Testing requirements
 
 A later implementation must add focused backend and frontend coverage for:
 
-* persisted nullable assignment/outcome, index, and historical readability;
+* persisted nullable `String(36)` assignment/outcome, assignee index,
+  restrictive FK behavior, blocked physical deletion of a referenced
+  membership, and historical disabled-member readability;
 * active same-workspace assignment, clearing, disabled rejection, and foreign
   or nonexistent membership non-disclosure;
 * scoped Action Item `404`, CSRF, BOLA-before-admission ordering, and retained
   Slice 5B read/mutation admission;
-* conditional follow-up and status writes, stale `409`, and version increments;
+* conditional follow-up and real status writes, stale `409`, version
+  increments, and pure same-status no-op behavior;
 * due-date parsing, rejection of naive values, and clearing;
-* all queue predicates, pagination/filter composition, IANA validation, missing
-  calendar timezone, and calendar boundaries including daylight-saving days;
+* all queue predicates, pagination/filter composition, `zoneinfo`/`tzdata`
+  IANA validation, missing calendar timezone, resolver failure mapping, and
+  calendar boundaries including daylight-saving days;
 * completion outcome trim/length requirements, server completion time, and
   clearing both completion fields when leaving `completed`;
 * active-member list tenancy and its minimal response shape; and
