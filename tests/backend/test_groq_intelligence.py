@@ -117,6 +117,7 @@ def test_groq_request_contract_and_strict_schema() -> None:
     request = captured[0]
     body = json.loads(request.content)
     assert str(request.url) == "https://mock.groq.test/openai/v1/chat/completions"
+    assert body["max_completion_tokens"] == 4096
     assert request.headers["authorization"] == "Bearer test-secret-key"
     assert body["model"] == "openai/gpt-oss-20b"
     assert body["messages"][0] == {"role": "system", "content": SYSTEM_PROMPT}

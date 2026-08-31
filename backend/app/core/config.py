@@ -1,5 +1,5 @@
 from functools import lru_cache
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,6 +24,24 @@ class Settings(BaseSettings):
     )
     trusted_proxy_ips: list[str] = Field(default_factory=list)
     max_api_request_body_bytes: int = Field(default=131_072, ge=1)
+    application_abuse_controls_enabled: bool = False
+    rate_limiter_max_keys: int = Field(default=4096, ge=1)
+    auth_login_rate_limit: int = Field(default=5, ge=1)
+    auth_login_rate_window_seconds: int = Field(default=600, ge=1)
+    auth_callback_rate_limit: int = Field(default=10, ge=1)
+    auth_callback_rate_window_seconds: int = Field(default=600, ge=1)
+    workspace_read_rate_limit: int = Field(default=120, ge=1)
+    workspace_read_rate_window_seconds: int = Field(default=60, ge=1)
+    workspace_mutation_rate_limit: int = Field(default=30, ge=1)
+    workspace_mutation_rate_window_seconds: int = Field(default=60, ge=1)
+    analysis_short_rate_limit: int = Field(default=6, ge=1)
+    analysis_short_rate_window_seconds: int = Field(default=600, ge=1)
+    analysis_daily_rate_limit: int = Field(default=30, ge=1)
+    analysis_daily_rate_window_seconds: int = Field(default=86_400, ge=1)
+    inference_workspace_concurrency: int = Field(default=1, ge=1)
+    inference_global_concurrency: int = Field(default=2, ge=1)
+    inference_capacity_retry_after_seconds: int = Field(default=5, ge=1)
+    port: int = Field(default=8000, ge=1, le=65535)
     auth0_domain: str | None = None
     auth0_client_id: str | None = None
     auth0_client_secret: str | None = None
@@ -37,6 +55,7 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "openai/gpt-oss-20b"
+    groq_max_completion_tokens: int = Field(default=4096, ge=1, le=65_536)
     ai_timeout_seconds: float = 60.0
     ai_max_retries: int = 2
     allow_deterministic_fallback: bool = True
@@ -76,6 +95,17 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("AUTH_CALLBACK_URL must use the configured APP_ORIGIN.")
             self.app_origin = self._normalized_origin(app_origin)
+            if not self.application_abuse_controls_enabled:
+                raise ValueError("APPLICATION_ABUSE_CONTROLS_ENABLED must be true in production.")
+            if not self.trusted_proxy_ips:
+                raise ValueError("TRUSTED_PROXY_IPS must list explicit production proxy IPs or networks.")
+            if any(value.strip() == "*" for value in self.trusted_proxy_ips):
+                raise ValueError("TRUSTED_PROXY_IPS must not contain a wildcard.")
+            try:
+                for value in self.trusted_proxy_ips:
+                    ip_network(value.strip(), strict=False)
+            except ValueError:
+                raise ValueError("TRUSTED_PROXY_IPS must contain valid IP addresses or networks.") from None
         return self
 
     @staticmethod

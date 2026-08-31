@@ -93,6 +93,8 @@ def test_psycopg_postgresql_url_uses_a_pre_ping_engine() -> None:
         app_origin="https://app.example.test",
         auth_callback_url="https://app.example.test/api/v1/auth/callback",
         trusted_hosts=["app.example.test"],
+        application_abuse_controls_enabled=True,
+        trusted_proxy_ips=["10.0.0.0/8"],
     )
 
     engine = database_session.create_database_engine(settings.database_url)
