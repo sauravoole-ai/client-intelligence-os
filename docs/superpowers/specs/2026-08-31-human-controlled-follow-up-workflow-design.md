@@ -105,8 +105,11 @@ Assignment uses `assignee_membership_id`, never `assignee_user_id`. A
 membership couples a person to one workspace, so the stored assignment remains
 tenant-scoped even when that person belongs to other workspaces.
 
-For a non-null new assignment, the server resolves the requested membership
-and the Action Item against the Action Item's workspace. The membership must
+For a non-null requested assignee ID equal to the persisted
+`assignee_membership_id`, the request retains the historical assignment; it is
+not a new assignment and does not require that membership to remain active.
+For a different non-null requested ID, the server resolves that target and the
+Action Item against the Action Item's workspace, and the target membership must
 be active. Disabling a membership never clears its historical assignment or
 deletes its Action Items; open work with that assignment remains readable and
 is visibly inactive until a human clears or reassigns it. Clearing assignment
@@ -182,9 +185,15 @@ the preserved value in the complete representation.
 The endpoint first performs the current-principal workspace-scoped Action Item
 lookup. A non-owned or nonexistent Action Item returns the existing generic
 `404` before mutation admission. It then applies mutation admission, validates
-the assignee without exposing whether a submitted membership is foreign or
-nonexistent, and conditionally applies both follow-up values as one atomic
-update. If either field fails validation or the version is stale, neither field
+the complete request against the persisted Action Item, and conditionally
+applies both follow-up values as one atomic update. After the scoped lookup, it
+first reads the persisted assignee. Explicit null clears it. A non-null request
+equal to that persisted ID retains the existing assignment and is not rejected
+solely because that membership is now disabled. A different non-null ID is a
+new assignment target and must resolve to an active membership in the same
+workspace; foreign and nonexistent targets share the non-disclosing validation
+behavior. It then compares the full normalized desired state. If either field
+fails validation or the version is stale for a real mutation, neither field
 changes. A real change to one or both values increments the existing `version`
 exactly once and returns the expanded Action Item. Clearing either assignment
 or due date is allowed only through its explicit null value in this complete
@@ -226,9 +235,12 @@ already scoped workspace and does not accept a workspace ID. Existing `status`,
 new filters. Pagination applies after all filters in the existing deterministic
 repository ordering.
 
-For `queue=due_today` and `queue=upcoming`, `time_zone` is required and is an
-IANA identifier such as `Asia/Kolkata`. The response remains the expanded
-Action Item list representation.
+`time_zone` is permitted only for `queue=due_today` and `queue=upcoming`; for
+those calendar-relative queues it is required and is an IANA identifier such
+as `Asia/Kolkata`. For `open`, `overdue`, `completed`, `no_due_date`, or an
+unfiltered Action Item list, `time_zone` must be absent. Supplying it in any
+of those cases returns `422` without attempting IANA resolution. The response
+remains the expanded Action Item list representation.
 
 ## 12. Operational queue semantics
 
@@ -263,11 +275,22 @@ compares stored instants against their corresponding absolute instants. The
 future implementation must declare the first-party `tzdata` package as an
 explicit backend runtime dependency. `zoneinfo` can otherwise rely on operating
 system timezone data that is not reliably present on Windows development hosts
-or minimal deployment images. Missing, invalid, unsupported, or fixed-offset
-`time_zone` values, including `ZoneInfoNotFoundError` or an equivalent resolver
-failure, receive the documented `422` validation response rather than a server
-error. Calendar timezone affects only queue boundaries and due-date display; it
-never affects authorization, workspace selection, assignment validation, stored
+or minimal deployment images. For those two calendar queues, missing, invalid,
+unsupported, or fixed-offset `time_zone` values, including
+`ZoneInfoNotFoundError` or an equivalent resolver failure, receive the
+documented `422` validation response rather than a server error. For `open`,
+`overdue`, `completed`, `no_due_date`, or no queue filter, `time_zone` is not
+permitted: both valid and invalid supplied values return `422` because the
+parameter combination is invalid, without resolving the supplied value.
+
+| Queue selection | absent `time_zone` | valid supplied `time_zone` | invalid supplied `time_zone` |
+| --- | --- | --- | --- |
+| `due_today` or `upcoming` | `422` | allowed | `422` |
+| `open`, `overdue`, `completed`, or `no_due_date` | allowed | `422` | `422` |
+| no `queue` | allowed | `422` | `422` |
+
+Calendar timezone affects only queue boundaries and due-date display; it never
+affects authorization, workspace selection, assignment validation, stored
 `due_at`, ownership, concurrency, or rate-limiter identity.
 
 The UI displays due instants in the same viewer timezone. When a human enters
@@ -337,13 +360,14 @@ client-supplied workspace ID. Action Item reads and mutations are scoped to
 that workspace; foreign and nonexistent Action Item IDs share the generic
 `404` result.
 
-For a non-null assignee, foreign and nonexistent membership IDs both return
-`422` with the identical generic message, `"The assignee selection is not valid
-for this workspace."` A disabled membership returns the same `422` message for
-a new assignment. This behavior, including the lack of membership details,
-prevents an object-existence oracle. A historic disabled assignee is still
-readable only through an Action Item the principal already owns in their
-workspace.
+For a non-null assignee different from the persisted assignee, foreign and
+nonexistent membership IDs both return `422` with the identical generic
+message, `"The assignee selection is not valid for this workspace."` A disabled
+membership returns the same `422` message for a new assignment. This behavior,
+including the lack of membership details, prevents an object-existence oracle.
+An equal persisted disabled assignee is retained rather than revalidated as a
+new target. A historic disabled assignee is still readable only through an
+Action Item the principal already owns in their workspace.
 
 Mutations retain CSRF protection. Protected Action Item lookup precedes
 admission, preserving BOLA-before-rate ordering. Reads retain read admission;
@@ -360,8 +384,9 @@ alter authorization, tenant selection, or limiter identity.
 | stale authorized expected version | existing generic `409` conflict message |
 | malformed or timezone-naive `due_at` | `422` schema validation response |
 | missing `time_zone` for `due_today` or `upcoming` | `422` validation response |
-| invalid, unsupported, or fixed-offset `time_zone` | `422` validation response |
-| `ZoneInfoNotFoundError` or equivalent requested-zone resolution failure | `422` validation response |
+| invalid, unsupported, or fixed-offset `time_zone` on `due_today` or `upcoming` | `422` validation response |
+| supplied `time_zone` with a non-calendar queue or no queue | `422` parameter-combination validation response, without IANA resolution |
+| `ZoneInfoNotFoundError` or equivalent requested-zone resolution failure during calendar-queue validation | `422` validation response |
 | completed target without a valid outcome | `422` validation response |
 | non-completed target with a non-null outcome | `422` validation response |
 | unauthenticated or CSRF-invalid mutation | existing authentication or CSRF response |
@@ -379,7 +404,10 @@ The assignee picker loads only active current-workspace members. An Action
 Item whose stored assignee membership is disabled displays the person's known
 identity with an explicit inactive/unavailable label and offers human
 reassignment or clearing. The UI never treats disabled membership as a valid
-selection.
+selection. It may retain that disabled historical assignee in the complete
+follow-up form; changing the due instant without changing the assignee is
+permitted. Reassignment to an active member or clearing assignment is also
+permitted, but the UI never offers a different disabled membership as a target.
 
 When saving follow-up details, the frontend keeps or obtains the current
 authoritative assignee, due instant, and version, then sends the complete
@@ -393,6 +421,10 @@ server representation.
 
 Queue selection fetches server-filtered results. For calendar queues the UI
 sends the browser IANA timezone; it displays due instants in that same zone.
+It sends `time_zone` only for `due_today` and `upcoming`, never for `open`,
+`overdue`, `completed`, `no_due_date`, or an unfiltered Action Item list. Due
+instants may always be formatted in the browser's local timezone without a
+server query timezone.
 It provides loading feedback while members or actions load, a queue-specific
 empty state when no records match, and a visible recoverable API error state.
 Selecting `completed` requires a nonblank outcome before submission; client
@@ -421,8 +453,9 @@ A later implementation must add focused backend and frontend coverage for:
 * persisted nullable `String(36)` assignment/outcome, assignee index,
   restrictive FK behavior, blocked physical deletion of a referenced
   membership, and historical disabled-member readability;
-* active same-workspace assignment, clearing, disabled rejection, and foreign
-  or nonexistent membership non-disclosure;
+* active same-workspace assignment, clearing, disabled rejection for a new
+  target, foreign or nonexistent membership non-disclosure, and retention of
+  an already-persisted disabled assignment;
 * scoped Action Item `404`, CSRF, BOLA-before-admission ordering, and retained
   Slice 5B read/mutation admission;
 * complete follow-up PUT field presence: each omitted key returns `422`, while
@@ -433,12 +466,20 @@ A later implementation must add focused backend and frontend coverage for:
   resending the desired current value, identical complete follow-up no-op
   behavior without version or `updated_at` change, and stale assignee-only,
   due-only, or both-field real changes returning `409`;
+* disabled historical assignee behavior: identical complete PUT with current
+  or stale version returns no-op `200`; retaining it while changing due date
+  succeeds with a current version and returns `409` when stale; assignment to
+  a different disabled target is rejected; reassignment to active and clearing
+  are accepted;
 * conditional real status writes, stale `409`, version increments, and pure
   same-status no-op behavior;
 * due-date parsing, rejection of naive values, and clearing;
 * all queue predicates, pagination/filter composition, `zoneinfo`/`tzdata`
   IANA validation, missing calendar timezone, resolver failure mapping, and
   calendar boundaries including daylight-saving days;
+* `time_zone` matrix behavior: valid/invalid supplied values on each
+  non-calendar queue and no queue return `422` without IANA resolution, while
+  calendar queues require and validate the IANA value; and
 * completion outcome trim/length requirements, server completion time, and
   clearing both completion fields when leaving `completed`;
 * active-member list tenancy and its minimal response shape; and
@@ -450,9 +491,10 @@ A later implementation must add focused backend and frontend coverage for:
 The follow-up workflow is acceptable only when all of the following are true:
 
 * An approved Action Item can be assigned only to an active membership in its
-  own workspace, scheduled with an absolute timezone-aware instant, and
-  cleared by a human through the complete required-key follow-up PUT
-  representation.
+  own workspace, while an already-persisted historical assignment remains
+  retainable after that membership is disabled. It can be scheduled with an
+  absolute timezone-aware instant and cleared by a human through the complete
+  required-key follow-up PUT representation.
 * Existing Action Item source, client, lifecycle, due, completion, and version
   fields remain authoritative and no FollowUp or history model exists.
 * Queue membership follows the exact server-authoritative predicates in this
