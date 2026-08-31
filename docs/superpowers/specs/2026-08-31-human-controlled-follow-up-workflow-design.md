@@ -153,7 +153,9 @@ no invitations, administration, role editing, user management, or settings.
 ### Follow-up details mutation
 
 `PUT /api/v1/actions/{action_id}/follow-up` is authenticated, CSRF-protected,
-and Slice 5B **MUTATION** admitted. Its body forbids extra fields and is:
+and Slice 5B **MUTATION** admitted. It is a complete representation of the
+Action Item's small mutable follow-up substate: assignee and due date. Its body
+forbids extra fields and requires all three keys:
 
 ```json
 {
@@ -163,20 +165,46 @@ and Slice 5B **MUTATION** admitted. Its body forbids extra fields and is:
 }
 ```
 
+`assignee_membership_id` and `due_at` are required in the request body but
+nullable in value. Required does not mean non-null. The future request model
+has no defaults that make either key omittable: conceptually,
+`assignee_membership_id: String(36) | None`, `due_at: timezone-aware datetime
+| None`, and `expected_version: int` are all required.
+
+For `assignee_membership_id`, a non-null value replaces the assignee and must
+meet the membership validation below; explicit JSON null clears assignment.
+For `due_at`, a non-null value replaces the due instant; explicit JSON null
+clears the due date. Omission of either field, or of `expected_version`, is a
+normal request-validation `422`: omission never means unchanged and never
+means null. A client preserving one value while changing the other must resend
+the preserved value in the complete representation.
+
 The endpoint first performs the current-principal workspace-scoped Action Item
 lookup. A non-owned or nonexistent Action Item returns the existing generic
 `404` before mutation admission. It then applies mutation admission, validates
 the assignee without exposing whether a submitted membership is foreign or
-nonexistent, conditionally updates the row for `expected_version`, increments
-the existing `version` once on success, and returns the expanded Action Item.
-Clearing either assignment or due date is allowed.
+nonexistent, and conditionally applies both follow-up values as one atomic
+update. If either field fails validation or the version is stale, neither field
+changes. A real change to one or both values increments the existing `version`
+exactly once and returns the expanded Action Item. Clearing either assignment
+or due date is allowed only through its explicit null value in this complete
+request representation.
 
 `assignee_membership_id` is an API string identifier validated using the
 repository's existing 36-character membership-ID convention; it does not
 change the `String(36)` database representation. `due_at` must include an
 offset or `Z`; a malformed or timezone-naive value is a validation error. The
 server stores the supplied instant and never derives a due date from an AI
-result or browser timezone.
+result or browser timezone. For no-op comparison, a membership identifier is
+its validated exact `String(36)` value, and a due value is its parsed absolute
+instant; null compares only with null. If both supplied normalized follow-up
+values equal their persisted values, the request is an idempotent no-op: it
+returns the current Action Item, does not increment `version`, and does not
+change `updated_at` solely because the identical complete representation was
+resubmitted. The required `expected_version` remains present, but a stale value
+does not turn this pure no-op into a conflict. Any difference in either field
+is a real conditional mutation and requires a matching version; a stale real
+mutation returns `409`.
 
 ### Status and completion mutation
 
@@ -283,10 +311,10 @@ Both mutation bodies require `expected_version >= 1`. Each real update is
 conditional on the Action Item ID, scoped workspace, and current version. A
 valid authorized request whose version is stale returns `409` with the existing
 non-sensitive conflict message and does not overwrite the row. The sole
-exception is the defined pure status no-op, which returns the current row
-without changing it even when its supplied version is stale. The frontend must
-refetch or prompt the human to reload after `409` and must not retry by
-replacing server state automatically.
+exceptions are the defined pure status no-op and pure complete follow-up no-op;
+each returns the current row without changing it even when its supplied version
+is stale. The frontend must refetch or prompt the human to reload after `409`
+and must not retry by replacing server state automatically.
 
 ## 16. Human-control invariants
 
@@ -328,6 +356,7 @@ alter authorization, tenant selection, or limiter identity.
 | --- | --- |
 | foreign or nonexistent Action Item | generic `404` existing Action Item message |
 | foreign, nonexistent, or disabled new assignee membership | generic `422` assignee-selection message; no membership detail |
+| omitted `assignee_membership_id`, `due_at`, or `expected_version` on follow-up PUT | `422` request-validation response |
 | stale authorized expected version | existing generic `409` conflict message |
 | malformed or timezone-naive `due_at` | `422` schema validation response |
 | missing `time_zone` for `due_today` or `upcoming` | `422` validation response |
@@ -351,6 +380,16 @@ Item whose stored assignee membership is disabled displays the person's known
 identity with an explicit inactive/unavailable label and offers human
 reassignment or clearing. The UI never treats disabled membership as a valid
 selection.
+
+When saving follow-up details, the frontend keeps or obtains the current
+authoritative assignee, due instant, and version, then sends the complete
+follow-up representation: the desired assignee (including explicit null), the
+desired due instant (including explicit null), and the current version. It
+never omits an unchanged field, relies on implicit server preservation, or
+converts an omitted UI value to null. On a successful response it replaces or
+refetches the local Action Item using existing patterns. On `409`, it does not
+retry with stale desired state and instead surfaces then refetches the newer
+server representation.
 
 Queue selection fetches server-filtered results. For calendar queues the UI
 sends the browser IANA timezone; it displays due instants in that same zone.
@@ -386,8 +425,16 @@ A later implementation must add focused backend and frontend coverage for:
   or nonexistent membership non-disclosure;
 * scoped Action Item `404`, CSRF, BOLA-before-admission ordering, and retained
   Slice 5B read/mutation admission;
-* conditional follow-up and real status writes, stale `409`, version
-  increments, and pure same-status no-op behavior;
+* complete follow-up PUT field presence: each omitted key returns `422`, while
+  explicit null assignment and due values are accepted;
+* atomic follow-up mutation: invalid assignee or due value and stale real
+  version change neither field; changing both fields increments version once;
+* explicit null clearing of either or both follow-up values, preservation by
+  resending the desired current value, identical complete follow-up no-op
+  behavior without version or `updated_at` change, and stale assignee-only,
+  due-only, or both-field real changes returning `409`;
+* conditional real status writes, stale `409`, version increments, and pure
+  same-status no-op behavior;
 * due-date parsing, rejection of naive values, and clearing;
 * all queue predicates, pagination/filter composition, `zoneinfo`/`tzdata`
   IANA validation, missing calendar timezone, resolver failure mapping, and
@@ -404,7 +451,8 @@ The follow-up workflow is acceptable only when all of the following are true:
 
 * An approved Action Item can be assigned only to an active membership in its
   own workspace, scheduled with an absolute timezone-aware instant, and
-  cleared by a human.
+  cleared by a human through the complete required-key follow-up PUT
+  representation.
 * Existing Action Item source, client, lifecycle, due, completion, and version
   fields remain authoritative and no FollowUp or history model exists.
 * Queue membership follows the exact server-authoritative predicates in this
