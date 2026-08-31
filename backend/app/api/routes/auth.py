@@ -14,9 +14,30 @@ from backend.app.security.sessions import (
     CurrentPrincipal, create_application_session, csrf_token_for_session,
     get_current_principal, require_csrf, session_cookie_name,
 )
+from backend.app.security.admission import RateLimitExceeded
 
 router = APIRouter(prefix="/auth")
 oauth = OAuth()
+
+
+def _source_ip(request: Request) -> str:
+    return request.client.host if request.client and request.client.host else "unknown-source"
+
+
+def _admit_auth(request: Request, operation: str) -> None:
+    controls = getattr(request.app.state, "admission_controls", None)
+    if controls is None or not controls.enabled:
+        return
+    limiter = controls.auth_login if operation == "login" else controls.auth_callback
+    policy = controls.policies.login if operation == "login" else controls.policies.callback
+    try:
+        limiter.consume(_source_ip(request), policy)
+    except RateLimitExceeded as error:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Request rate is temporarily limited.",
+            headers={"Retry-After": str(error.retry_after)},
+        ) from None
 
 
 def _oauth_client():
@@ -53,11 +74,13 @@ def _provision_user(session: Session, identity: dict[str, object]) -> tuple[User
 
 @router.get("/login")
 async def login(request: Request):
+    _admit_auth(request, "login")
     return await _oauth_client().authorize_redirect(request, settings.auth_callback_url)
 
 
 @router.get("/callback")
 async def callback(request: Request, session: Session = Depends(get_db_session)):
+    _admit_auth(request, "callback")
     try:
         token = await _oauth_client().authorize_access_token(request)
         identity = token.get("userinfo")

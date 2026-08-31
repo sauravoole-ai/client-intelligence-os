@@ -191,6 +191,7 @@ def _request_body(
     )
     return {
         "model": settings.groq_model,
+        "max_completion_tokens": settings.groq_max_completion_tokens,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},

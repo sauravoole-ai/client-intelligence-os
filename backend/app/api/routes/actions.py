@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -34,6 +34,7 @@ from backend.app.schemas.action_items import (
     MaterializeActionsRequest,
     MaterializeActionsResponse,
 )
+from backend.app.api.admission import admit_workspace_mutation, admit_workspace_read
 
 router = APIRouter(dependencies=[Depends(get_current_principal)])
 RETRIEVAL_DETAIL = "The action items could not be retrieved."
@@ -78,10 +79,12 @@ def require_client(session: Session, client_id: UUID, workspace_id: str):
 def materialize_actions(
     analysis_id: UUID,
     payload: MaterializeActionsRequest,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(require_csrf),
 ) -> MaterializeActionsResponse:
     analysis_record = require_analysis(session, analysis_id, principal.workspace_id)
+    admit_workspace_mutation(request, principal.workspace_id)
     stored_analysis = validate_stored_analysis(analysis_record.analysis_output)
     if analysis_record.review_status != "approved":
         raise HTTPException(
@@ -131,6 +134,7 @@ def materialize_actions(
 
 @router.get("/actions", response_model=ActionItemListResponse)
 def list_actions(
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     action_status: Annotated[ActionItemStatus | None, Query(alias="status")] = None,
@@ -138,6 +142,7 @@ def list_actions(
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ActionItemListResponse:
+    admit_workspace_read(request, principal.workspace_id)
     try:
         records = list_actions_for_workspace(
             session,
@@ -161,6 +166,7 @@ def list_actions(
 @router.get("/actions/{action_id}", response_model=ActionItemResponse)
 def get_action(
     action_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
 ) -> ActionItemResponse:
@@ -173,6 +179,7 @@ def get_action(
         raise HTTPException(
             status_code=404, detail="The requested action item was not found."
         )
+    admit_workspace_read(request, principal.workspace_id)
     return action_response(record)
 
 
@@ -181,12 +188,14 @@ def get_action(
 )
 def list_analysis_actions(
     analysis_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ActionItemListResponse:
     require_analysis(session, analysis_id, principal.workspace_id)
+    admit_workspace_read(request, principal.workspace_id)
     return _list_scoped_actions(
         session, workspace_id=principal.workspace_id, analysis_id=str(analysis_id), offset=offset, limit=limit
     )
@@ -195,12 +204,14 @@ def list_analysis_actions(
 @router.get("/clients/{client_id}/actions", response_model=ActionItemListResponse)
 def list_client_actions(
     client_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ActionItemListResponse:
     require_client(session, client_id, principal.workspace_id)
+    admit_workspace_read(request, principal.workspace_id)
     return _list_scoped_actions(
         session, workspace_id=principal.workspace_id, client_id=str(client_id), offset=offset, limit=limit
     )
@@ -239,12 +250,14 @@ def _list_scoped_actions(
 def change_action_status(
     action_id: UUID,
     payload: ActionStatusUpdateRequest,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(require_csrf),
 ) -> ActionItemResponse:
     try:
         if get_action_for_workspace(session, str(action_id), principal.workspace_id) is None:
             raise ActionItemNotFoundError
+        admit_workspace_mutation(request, principal.workspace_id)
         record = update_action_status(
             session,
             str(action_id),

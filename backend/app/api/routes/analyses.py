@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -35,6 +35,7 @@ from backend.app.services.intelligence_orchestrator import (
     IntelligenceEngineError,
     run_analysis,
 )
+from backend.app.api.admission import admit_analysis, admit_workspace_mutation, admit_workspace_read
 
 router = APIRouter(dependencies=[Depends(get_current_principal)])
 
@@ -56,6 +57,7 @@ def serialized_reviewed_at(reviewed_at: datetime | None) -> datetime | None:
 )
 def create_analysis(
     payload: AnalysisRequest,
+    request: Request,
     principal: CurrentPrincipal = Depends(require_csrf),
     session: Session = Depends(get_db_session),
 ) -> AnalysisResponse:
@@ -80,40 +82,37 @@ def create_analysis(
             update={"client_reference": selected_client.external_reference}
         )
 
-    try:
-        analysis = run_analysis(resolved_payload)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(error),
-        ) from error
-    except IntelligenceEngineError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The analysis service is temporarily unavailable.",
-        ) from error
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The analysis service is temporarily unavailable.",
-        ) from error
+    with admit_analysis(request, principal.workspace_id):
+        try:
+            analysis = run_analysis(resolved_payload)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(error),
+            ) from error
+        except IntelligenceEngineError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The analysis service is temporarily unavailable.",
+            ) from error
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The analysis service is temporarily unavailable.",
+            ) from error
 
-    try:
-        create_analysis_record(
-            session,
-            analysis,
-            payload.conversation,
-            payload.engine_mode,
-            resolved_client_id,
-            principal.workspace_id,
-        )
-        session.commit()
-    except (AnalysisPersistenceError, SQLAlchemyError) as error:
-        session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The analysis could not be saved.",
-        ) from error
+        try:
+            create_analysis_record(
+                session, analysis, payload.conversation, payload.engine_mode,
+                resolved_client_id, principal.workspace_id,
+            )
+            session.commit()
+        except (AnalysisPersistenceError, SQLAlchemyError) as error:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The analysis could not be saved.",
+            ) from error
 
     return analysis
 
@@ -157,11 +156,13 @@ def review_response(record: AnalysisRecord) -> AnalysisReviewResponse:
     response_model=AnalysisListResponse,
 )
 def list_analyses(
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AnalysisListResponse:
+    admit_workspace_read(request, principal.workspace_id)
     try:
         records = list_analyses_for_workspace(session, workspace_id=principal.workspace_id, offset=offset, limit=limit)
     except AnalysisPersistenceError as error:
@@ -185,6 +186,7 @@ def list_analyses(
 )
 def get_analysis(
     analysis_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
 ) -> PersistedAnalysisResponse:
@@ -201,6 +203,7 @@ def get_analysis(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="The requested analysis was not found.",
         )
+    admit_workspace_read(request, principal.workspace_id)
 
     analysis = validate_stored_analysis(record.analysis_output)
     return persisted_analysis_response(record, analysis)
@@ -214,12 +217,14 @@ def get_analysis(
 def review_analysis(
     analysis_id: UUID,
     payload: AnalysisReviewRequest,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(require_csrf),
 ) -> AnalysisReviewResponse:
     try:
         if get_analysis_for_workspace(session, str(analysis_id), principal.workspace_id) is None:
             raise AnalysisNotFoundError
+        admit_workspace_mutation(request, principal.workspace_id)
         record = update_analysis_review(
             session,
             str(analysis_id),

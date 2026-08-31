@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,7 @@ from backend.app.schemas.clients import (
     ClientListResponse,
     ClientResponse,
 )
+from backend.app.api.admission import admit_workspace_mutation, admit_workspace_read
 
 router = APIRouter(dependencies=[Depends(get_current_principal)])
 CLIENT_RETRIEVAL_ERROR = "The client records could not be retrieved."
@@ -36,9 +37,11 @@ CLIENT_RETRIEVAL_ERROR = "The client records could not be retrieved."
 @router.post("/clients", response_model=ClientResponse, status_code=201, dependencies=[Depends(require_csrf)])
 def create_client_route(
     payload: ClientCreateRequest,
+    request: Request,
     principal: CurrentPrincipal = Depends(require_csrf),
     session: Session = Depends(get_db_session),
 ) -> ClientResponse:
+    admit_workspace_mutation(request, principal.workspace_id)
     try:
         record = create_client(
             session,
@@ -61,11 +64,13 @@ def create_client_route(
 
 @router.get("/clients", response_model=ClientListResponse)
 def list_clients_route(
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ClientListResponse:
+    admit_workspace_read(request, principal.workspace_id)
     try:
         records = list_clients_for_workspace(
             session, workspace_id=principal.workspace_id, offset=offset, limit=limit
@@ -95,10 +100,13 @@ def require_client(session: Session, client_id: UUID, workspace_id: str):
 @router.get("/clients/{client_id}", response_model=ClientResponse)
 def get_client_route(
     client_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
 ) -> ClientResponse:
-    return ClientResponse.model_validate(require_client(session, client_id, principal.workspace_id))
+    record = require_client(session, client_id, principal.workspace_id)
+    admit_workspace_read(request, principal.workspace_id)
+    return ClientResponse.model_validate(record)
 
 
 @router.get(
@@ -107,12 +115,14 @@ def get_client_route(
 )
 def list_client_analyses(
     client_id: UUID,
+    request: Request,
     session: Session = Depends(get_db_session),
     principal: CurrentPrincipal = Depends(get_current_principal),
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ClientAnalysisListResponse:
     require_client(session, client_id, principal.workspace_id)
+    admit_workspace_read(request, principal.workspace_id)
     try:
         records = list_analyses_for_workspace(
             session, workspace_id=principal.workspace_id, client_id=str(client_id), offset=offset, limit=limit

@@ -12,6 +12,7 @@ from backend.app.db import session as database_session
 from backend.app.middleware import HostAuthorityMiddleware
 from backend.app.middleware.body_limit import RequestBodyLimitMiddleware
 from backend.app.middleware.security_headers import ApiSecurityHeadersMiddleware
+from backend.app.security.admission import create_app_admission_controls
 
 
 @asynccontextmanager
@@ -31,6 +32,8 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         docs_url=None if production else "/docs",
         redoc_url=None if production else "/redoc",
     )
+    app.state.admission_controls = create_app_admission_controls(app_settings)
+    app.state.settings = app_settings
 
     if app_settings.oidc_state_secret:
         app.add_middleware(

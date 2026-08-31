@@ -130,3 +130,23 @@ connect-src 'self'; font-src 'self'
 `/api/v1/health` is dependency-free liveness. `/api/v1/health/ready` verifies
 database reachability and should be restricted to platform/internal probes
 where the deployment edge supports that policy.
+
+## Controlled inference admission contract
+
+The application has six independently bounded process-local authentication,
+workspace, and analysis rate pools (login, callback, read, mutation, analysis
+attempt, and analysis daily quota), plus inference admission. `RATE_LIMITER_MAX_KEYS`
+is the maximum tracked keys **per policy pool**, so one policy cannot consume
+another policy's limiter capacity. They are valid only with **one Uvicorn
+worker and one application instance**. Production uses:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.app.run_production
+```
+
+The runner explicitly uses one worker, disables reload, and enables proxy
+headers only for explicit `TRUSTED_PROXY_IPS` values. It never uses a wildcard.
+Before using more than one worker or app replica, replace these controls with
+shared rate buckets and distributed inference leases (for example Redis).
+Application controls do not replace edge-level volumetric/DDoS protections;
+final deployment must verify exactly one running app replica.
