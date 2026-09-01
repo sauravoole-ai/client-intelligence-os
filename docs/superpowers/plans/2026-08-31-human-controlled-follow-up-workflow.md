@@ -25,6 +25,7 @@
 - Queue semantics are server-authoritative: active work is `open` or `in_progress`; `open`, `overdue`, `due_today`, `upcoming`, `completed`, and `no_due_date` use the approved predicates. `overdue` can overlap `due_today`; `due_today` and `upcoming` are disjoint; dismissed items are in no queue.
 - `time_zone` is required only for `due_today` and `upcoming`, must be an IANA zone resolved with `ZoneInfo`, and maps resolver failures to `422`. It must be absent for every other queue and for an unfiltered list; any supplied value there returns `422` without resolving it.
 - Preserve current-principal workspace authority: no client-supplied workspace ID, scoped Action Item lookup with foreign/nonexistent `404`, membership non-disclosure, CSRF on mutations, BOLA-before-admission ordering, Slice 5B READ/MUTATION admission, and optimistic concurrency.
+- Each implementation task ends after reporting its exact changed files and RED/GREEN/regression results for human review. Keep implementation changes uncommitted; no task may commit, push, create a PR, merge, or deploy without a later explicit human-authorized release prompt.
 - Scope exclusions: email/Gmail, calendar/CRM/Slack integration, reminders, notifications, AI-generated messages/assignment/completion, automatic external action, longitudinal synthesis, billing, member administration, role redesign, Redis, queues, distributed coordination, horizontal scaling, deployment, broad observability, mobile-native work, Kanban, drag/drop, calendar UI, charts, and unrelated redesign.
 
 ---
@@ -45,7 +46,7 @@
 
 **Produces:** nullable `ActionItemRecord.assignee_membership_id` and `.completion_outcome`, a `WorkspaceMembershipRecord.assigned_action_items` relationship, migration revision `0006_human_controlled_follow_up`, and migration-head expectations updated to `0006_human_controlled_follow_up`.
 
-- [ ] **Step 1: Write failing migration and model tests.** Extend `test_access_control_foundation.py` to upgrade a database containing an Action Item through the new revision and assert nullable `assignee_membership_id` of `String(36)`, nullable `completion_outcome`, `ix_action_items_assignee_membership_id`, and a foreign key to `workspace_memberships.id` whose `ondelete` is `RESTRICT`. Insert an old-row-shaped Action Item before upgrade and assert both additions are null without altering due/completed/status/version. Add a constraint test that assigning an existing membership succeeds, disabling that membership leaves the reference readable, and physical deletion of the referenced membership raises an integrity error. Update `test_production_database_foundation.py` to assert a fresh upgrade reaches the new head and legacy rows remain valid.
+- [ ] **Step 1: Write failing migration and model tests.** Extend `test_access_control_foundation.py` to upgrade a database containing an Action Item through the new revision and assert nullable `assignee_membership_id` of `String(36)`, nullable `completion_outcome`, `ix_action_items_assignee_membership_id`, and a foreign key to `workspace_memberships.id` whose `ondelete` is `RESTRICT`. Insert an old-row-shaped Action Item before upgrade and assert both additions are null without altering due/completed/status/version. For the physical-delete behavior, add a focused local SQLite-engine helper in this test module that registers a SQLAlchemy connection event to execute `PRAGMA foreign_keys=ON` for every connection; assert `PRAGMA foreign_keys` returns `1` before creating workspace/user/membership/action data, then assert deletion of the referenced membership raises `IntegrityError` and rolls back cleanly. Update `test_production_database_foundation.py` to assert a fresh upgrade reaches the new head and legacy rows remain valid.
 
 - [ ] **Step 2: Run the focused migration tests and confirm RED.**
 
@@ -71,7 +72,7 @@
 
 - [ ] **Step 6: Refactor only if it removes duplicated migration assertions; otherwise retain the minimal change.**
 
-- [ ] **Step 7: Review checkpoint.** Verify that only nullable additions were made, `RESTRICT` is explicit, no synthetic data was introduced, and no new API behavior was exposed. Commit this coherent slice only after human review of its diff: `feat: add action item follow-up persistence`.
+- [ ] **Step 7: Human review checkpoint.** Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 2: Schemas and Action Item representation foundation
 
@@ -84,7 +85,7 @@
 
 **Consumes:** Task 1 Action Item fields and relationships; existing `ActionItemResponse`, `ActionStatusUpdateRequest`, and `action_response`.
 
-**Produces:** `AssigneeResponse`, expanded `ActionItemResponse`, `WorkspaceMemberListResponse`, `ActionFollowUpUpdateRequest`, extended `ActionStatusUpdateRequest`, and `ActionQueue` query type used by later routes/repositories.
+**Produces:** `AssigneeResponse`, expanded `ActionItemResponse`, `WorkspaceMemberResponse`, `WorkspaceMemberListResponse`, `ActionFollowUpUpdateRequest`, extended `ActionStatusUpdateRequest`, and `ActionQueue` query type used by later routes/repositories.
 
 - [ ] **Step 1: Write failing schema/representation tests.** Add parameterized tests that response serialization contains nullable `assignee_membership_id`, nullable `completion_outcome`, and an `assignee` object with `membership_id`, display name, nullable email, role, and active/disabled status. Test that follow-up JSON omitting each of `assignee_membership_id`, `due_at`, or `expected_version` is `422`, while explicit null assignee/due values parse. Test that a naive due timestamp is rejected, an offset/Z instant parses, expected version below one is rejected, extra fields are forbidden, and completion outcome trimming/empty/2,001-character input validates according to target status.
 
@@ -112,7 +113,7 @@
 
 - [ ] **Step 6: Refactor only to centralize normalization shared by status and follow-up models.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm no Pydantic default makes a complete follow-up key optional and no schema accepts a workspace ID. Commit after review: `feat: define action item follow-up contracts`.
+- [ ] **Step 7: Human review checkpoint.** Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 3: Workspace-member read and assignment lookup foundation
 
@@ -121,31 +122,28 @@
 - Create: `backend/app/repositories/workspace_membership_repository.py`
 - Create: `backend/app/api/routes/workspace.py`
 - Modify: `backend/app/api/router.py`
-- Modify: `backend/app/api/routes/actions.py`
 - Modify: `tests/backend/test_auth_security.py`
-- Modify: `tests/backend/test_action_items.py`
 - Test: `tests/backend/test_auth_security.py`
-- Test: `tests/backend/test_action_items.py`
 
-**Consumes:** `CurrentPrincipal`, `WorkspaceMembershipRecord`, `UserRecord`, `admit_workspace_read`, `get_action_for_workspace`, and Task 2 member response models.
+**Consumes:** `CurrentPrincipal`, `WorkspaceMembershipRecord`, `UserRecord`, `admit_workspace_read`, and Task 2 `WorkspaceMemberResponse` and `WorkspaceMemberListResponse`.
 
-**Produces:** `list_active_workspace_members(session, workspace_id)`, `get_membership_for_workspace(session, membership_id, workspace_id)`, `GET /api/v1/workspace/members`, and `validate_follow_up_assignee(...)` for Task 4.
+**Produces:** `list_active_members_for_workspace(session, *, workspace_id)`, `get_membership_for_workspace(session, *, membership_id, workspace_id)`, and `GET /api/v1/workspace/members` for the active-member picker and Task 4's repository-owned assignment validation.
 
-- [ ] **Step 1: Write failing tenancy and membership tests.** In `test_auth_security.py`, create active and disabled memberships in the current workspace plus a membership in another workspace; assert GET `/api/v1/workspace/members` returns only active current-workspace member identity fields, accepts no workspace selector, and charges READ admission. In `test_action_items.py`, test assignment lookup: same persisted disabled membership is retainable; a different active same-workspace target is accepted; a disabled, foreign, and nonexistent target each produce the exact generic validation path without disclosing membership details.
+- [ ] **Step 1: Write failing tenancy and member-read tests.** In `test_auth_security.py`, create active and disabled memberships in the current workspace plus a membership in another workspace; assert GET `/api/v1/workspace/members` returns only active current-workspace member identity fields, accepts no workspace selector, and charges READ admission. Add direct repository tests that the active-list function excludes disabled/foreign records and that `get_membership_for_workspace` returns `None` for both foreign and nonexistent IDs while returning a same-workspace record with its active/disabled status.
 
 - [ ] **Step 2: Run focused security tests and confirm RED.**
 
-  Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_auth_security.py tests/backend/test_action_items.py -q`
+  Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_auth_security.py -q`
 
   Expected: FAIL because the member route and scoped membership lookup/validation functions do not exist.
 
-- [ ] **Step 3: Implement the minimal scoped read and lookup.** Add a repository module that selects memberships by workspace, joins `UserRecord` for display identity, and filters active status only for the picker. Add the route with current-principal workspace only and call `admit_workspace_read` without an administrative capability. Implement `validate_follow_up_assignee` in `actions.py` (or a narrowly named helper there): null clears, exact persisted ID retains without active-status revalidation, every different non-null target must resolve active in the action workspace, and every invalid target raises the one generic `422` assignee message.
+- [ ] **Step 3: Implement the minimal scoped read and lookup.** Add a repository module that selects memberships by workspace, joins `UserRecord` for display identity, and filters active status only for the picker. Define exactly `list_active_members_for_workspace(session, *, workspace_id)` and `get_membership_for_workspace(session, *, membership_id, workspace_id)`; the latter returns `None` for both foreign and nonexistent membership IDs and returns a same-workspace record without filtering its status. Add the route with current-principal workspace only and call `admit_workspace_read` without an administrative capability. Do not add Action Item assignment-domain validation to the route.
 
 - [ ] **Step 4: Run focused GREEN verification.**
 
-  Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_auth_security.py tests/backend/test_action_items.py -q`
+  Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_auth_security.py -q`
 
-  Expected: PASS; picker and assignment-domain behavior remain workspace-scoped and non-disclosing.
+  Expected: PASS; picker and scoped membership lookup behavior remain workspace-scoped and non-disclosing.
 
 - [ ] **Step 5: Run Slice 5B read-admission regression and inspect the diff.**
 
@@ -157,7 +155,7 @@
 
 - [ ] **Step 6: Refactor only if the same scoped membership query is otherwise duplicated.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm the picker has no member administration behavior and foreign/nonexistent/disabled target handling is indistinguishable. Commit after review: `feat: add scoped action assignee lookup`.
+- [ ] **Step 7: Human review checkpoint.** Confirm the picker has no member administration behavior. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 4: Atomic follow-up repository mutation
 
@@ -167,9 +165,9 @@
 - Modify: `tests/backend/test_action_items.py`
 - Test: `tests/backend/test_action_items.py`
 
-**Consumes:** Task 1 columns, Task 3 validated desired assignee result, `ActionItemConflictError`, and existing versioned-update convention.
+**Consumes:** Task 1 columns, Task 3 `get_membership_for_workspace`, `ActionItemConflictError`, and existing versioned-update convention.
 
-**Produces:** `update_action_follow_up(session, action_id, *, assignee_membership_id, due_at, expected_version, updated_at) -> ActionItemRecord`, with no-op and conflict behavior used by Task 5.
+**Produces:** `ActionItemAssigneeInvalidError` and `update_action_follow_up(session, *, action_id, workspace_id, assignee_membership_id, due_at, expected_version, updated_at) -> ActionItemRecord`, the sole assignment-domain validation and atomic mutation boundary used by Task 5.
 
 - [ ] **Step 1: Write repository RED tests.** Add direct repository tests for setting both fields; clearing assignee; clearing due date; clearing both; identical complete state; stale pure no-op; real assignee-only, due-only, and two-field changes; stale real mutation; exactly one version increment for two fields; no `updated_at` change on no-op; no partial write after an invalid desired state or failed conditional update; retained disabled assignee with due edit; rejected different disabled target; active reassignment; and unassignment.
 
@@ -179,7 +177,7 @@
 
   Expected: FAIL because `update_action_follow_up` is not defined and the required atomic semantics are unavailable.
 
-- [ ] **Step 3: Implement the minimal conditional mutation.** Load the current record with `populate_existing=True`; normalize/calculate the complete desired pair; return the record immediately when both values equal persisted values before comparing `expected_version`; otherwise execute one `UPDATE` conditioned on ID and expected version that assigns both columns, `updated_at`, and `version = version + 1`. Reload the row after flush; map a failed conditional update to current-state no-op only if the full pair now equals desired, otherwise `ActionItemConflictError`. Do not commit in the repository.
+- [ ] **Step 3: Implement the minimal conditional mutation.** Load the Action Item by `action_id` and `workspace_id` with `populate_existing=True`. Inspect its persisted assignee: null clears; an equal non-null ID retains even if disabled; a different non-null ID is resolved only through `get_membership_for_workspace(session, membership_id=..., workspace_id=...)` and must be active, otherwise raise `ActionItemAssigneeInvalidError` with no membership detail. Normalize/calculate the complete desired pair; return the record immediately when both values equal persisted values before comparing `expected_version`; otherwise execute one `UPDATE` conditioned on ID, workspace ID, and expected version that assigns both columns, `updated_at`, and `version = version + 1`. Reload the row after flush; map a failed conditional update to current-state no-op only if the full pair now equals desired, otherwise `ActionItemConflictError`. Do not commit in the repository.
 
 - [ ] **Step 4: Run focused GREEN verification.**
 
@@ -197,7 +195,7 @@
 
 - [ ] **Step 6: Refactor only to share safe reload-after-conditional-update code with `update_action_status`.**
 
-- [ ] **Step 7: Review checkpoint.** Check that validation happens before the update invocation, no stale real request partially changes either field, and a stale pure no-op is intentionally `200`. Commit after review: `feat: add atomic action follow-up mutation`.
+- [ ] **Step 7: Human review checkpoint.** Check that the repository is the sole assignment-domain validator, no stale real request partially changes either field, and a stale pure no-op is intentionally `200`. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 5: Follow-up PUT API integration
 
@@ -209,7 +207,7 @@
 - Test: `tests/backend/test_action_items.py`
 - Test: `tests/backend/test_controlled_inference_admission.py`
 
-**Consumes:** `ActionFollowUpUpdateRequest`, `validate_follow_up_assignee`, `update_action_follow_up`, `require_csrf`, and `admit_workspace_mutation`.
+**Consumes:** `ActionFollowUpUpdateRequest`, `update_action_follow_up`, `ActionItemAssigneeInvalidError`, `require_csrf`, and `admit_workspace_mutation`.
 
 **Produces:** authenticated `PUT /api/v1/actions/{action_id}/follow-up` returning `ActionItemResponse`.
 
@@ -221,7 +219,7 @@
 
   Expected: FAIL with route-not-found or missing endpoint behavior.
 
-- [ ] **Step 3: Implement the single endpoint.** Add the PUT route with `Depends(require_csrf)`. First call `get_action_for_workspace` and emit the existing generic `404`; next call `admit_workspace_mutation`; then validate the desired assignee against the protected record, call `update_action_follow_up`, commit once, and map persistence/conflict failures to existing non-sensitive `503`/`409` responses. Do not add any partial PATCH or alternative follow-up endpoint.
+- [ ] **Step 3: Implement the single endpoint.** Add the PUT route with `Depends(require_csrf)`. First call `get_action_for_workspace` and emit the existing generic `404`; next call `admit_workspace_mutation`; then call `update_action_follow_up` with `principal.workspace_id` and commit once. Map only `ActionItemAssigneeInvalidError` to the approved generic `422` assignee-selection message, `ActionItemConflictError` to existing non-sensitive `409`, and persistence failures to existing non-sensitive `503`. Do not add route-level assignment validation, a partial PATCH, or another follow-up endpoint.
 
 - [ ] **Step 4: Run focused GREEN verification.**
 
@@ -239,7 +237,7 @@
 
 - [ ] **Step 6: Refactor only to keep route error mapping aligned with the existing status endpoint.**
 
-- [ ] **Step 7: Review checkpoint.** Verify protected-object `404` precedes rate admission and no membership detail leaks through failures. Commit after review: `feat: expose action follow-up updates`.
+- [ ] **Step 7: Human review checkpoint.** Verify protected-object `404` precedes rate admission and only the repository's invalid-target exception maps to non-disclosing `422`. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 6: Status completion contract
 
@@ -255,7 +253,7 @@
 
 **Produces:** extended `update_action_status(..., completion_outcome: str | None, updated_at: datetime)` with current-state completion semantics through the existing status endpoint.
 
-- [ ] **Step 1: Write status RED tests.** Update existing status tests so `completed` without outcome, whitespace-only outcome, or outcome longer than 2,000 is `422`; a valid outcome is trimmed and causes server-generated `completed_at`; transition away clears both `completed_at` and `completion_outcome`; completed plus unchanged normalized outcome is a no-op even stale; completed plus changed outcome conditionally increments version while retaining completion time; stale changed outcome is `409`; and current generic open/in-progress/dismissed transitions retain their supported behavior.
+- [ ] **Step 1: Write status RED tests.** Update existing status tests so `completed` without outcome, whitespace-only outcome, or outcome longer than 2,000 is `422`; a valid outcome is trimmed and causes server-generated `completed_at`; transition away clears both `completed_at` and `completion_outcome`; completed plus unchanged normalized outcome is a no-op even stale; completed plus changed outcome conditionally increments version while retaining completion time; stale changed outcome is `409`. Add a parameterized pure same-status non-completed test for `open`→`open`, `in_progress`→`in_progress`, and `dismissed`→`dismissed`: each stale request succeeds with the authoritative record, leaves `version` and `updated_at` unchanged, and leaves `completed_at` and `completion_outcome` null. Retain existing generic status-transition compatibility tests.
 
 - [ ] **Step 2: Run focused status tests and confirm RED.**
 
@@ -281,7 +279,7 @@
 
 - [ ] **Step 6: Refactor only to share conditional-update mechanics, not lifecycle policy.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm no second completion route exists, AI has no completion path, and status no-op semantics remain version-safe. Commit after review: `feat: require outcomes for action completion`.
+- [ ] **Step 7: Human review checkpoint.** Confirm no second completion route exists, AI has no completion path, and both completed and non-completed same-state no-op semantics remain version-safe. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 7: Queue and timezone repository logic
 
@@ -296,23 +294,31 @@
 
 **Produces:** `validate_calendar_time_zone(queue, time_zone) -> ZoneInfo | None`, queue-aware `list_actions_for_workspace(..., queue, assignee_membership_id, time_zone, now_utc)`, and explicit `tzdata` runtime dependency.
 
-- [ ] **Step 1: Write queue/timezone RED tests.** Freeze `now_utc` and assert exact repository predicates for `open`, `overdue`, `no_due_date`, `due_today`, `upcoming`, and `completed`; exact local midnight inclusion and next-midnight exclusion; earlier-today overdue overlap with due_today; future due completed records only in completed; dismissed overdue records excluded; null dues only in no_due_date; and DST-short and DST-long calendar days. Add resolver tests for invalid/fixed-offset zones and a monkeypatched `ZoneInfoNotFoundError` mapping to validation error.
+- [ ] **Step 1: Prepare the timezone-data prerequisite; this is not feature RED.** Add unpinned `tzdata` to `backend/requirements.txt`, matching the manifest's existing version convention, then synchronize the project virtual environment with `\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt`.
 
-- [ ] **Step 2: Run focused queue tests and confirm RED.**
+- [ ] **Step 2: Verify the environment prerequisite before writing behavioral tests.**
+
+  Run: `\.venv\Scripts\python.exe -c "from zoneinfo import ZoneInfo; ZoneInfo('America/New_York'); print('IANA zone data available')"`
+
+  Expected: PASS and prints `IANA zone data available`. If dependency synchronization or this check fails, STOP Task 7: a missing `tzdata`/ZoneInfo data source is an environment prerequisite failure, not an acceptable feature RED.
+
+- [ ] **Step 3: Write queue/timezone RED tests.** Freeze `now_utc` and assert exact repository predicates for `open`, `overdue`, `no_due_date`, `due_today`, `upcoming`, and `completed`; exact local midnight inclusion and next-midnight exclusion; earlier-today overdue overlap with due_today; future due completed records only in completed; dismissed overdue records excluded; null dues only in no_due_date; and DST-short and DST-long calendar days. Add resolver tests for invalid/fixed-offset zones and a monkeypatched `ZoneInfoNotFoundError` mapping to validation error.
+
+- [ ] **Step 4: Run focused queue tests and confirm intended RED.**
 
   Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_action_items.py -k "queue or timezone" -q`
 
-  Expected: FAIL because queue arguments, resolver handling, and predicates do not exist.
+  Expected: FAIL because queue arguments, resolver handling, or approved predicates are absent or semantically wrong, never because IANA zone data is unavailable.
 
-- [ ] **Step 3: Implement the smallest server-side filtering.** Add unpinned `tzdata` to `backend/requirements.txt`, matching the manifest's existing version convention, so Windows and minimal runtime images have IANA data. Use `ZoneInfo` to form viewer-local start-of-day and next start-of-day only for calendar queues, convert boundaries to absolute instants, and use SQLAlchemy predicates for the approved status/due windows. Treat `server_now_utc` as a single UTC instant per request. Do not add a due-date index, timezone table, or custom library.
+- [ ] **Step 5: Implement the smallest server-side filtering.** Use `ZoneInfo` to form viewer-local start-of-day and next start-of-day only for calendar queues, convert boundaries to absolute instants, and use SQLAlchemy predicates for the approved status/due windows. Treat `server_now_utc` as a single UTC instant per request. Do not add a due-date index, timezone table, `pytz`, `dateutil`, or custom timezone library.
 
-- [ ] **Step 4: Run focused GREEN verification.**
+- [ ] **Step 6: Run focused GREEN verification.**
 
   Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_action_items.py -k "queue or timezone" -q`
 
   Expected: PASS; all six predicates, overlap/disjointness, DST boundaries, and resolver failures are deterministic.
 
-- [ ] **Step 5: Run neighboring repository regression and inspect the diff.**
+- [ ] **Step 7: Run neighboring repository regression and inspect the diff.**
 
   Run: `\.venv\Scripts\python.exe -m pytest tests/backend/test_action_items.py -q`
 
@@ -320,9 +326,9 @@
 
   Expected: PASS with existing deterministic ordering retained.
 
-- [ ] **Step 6: Refactor only to keep queue predicate construction readable and testable.**
+- [ ] **Step 8: Refactor only to keep queue predicate construction readable and testable.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm this is the only task changing `backend/requirements.txt`, `tzdata` is not installed during review, and calendar time affects no authorization or stored due instant. Commit after review: `feat: add action queue filtering`.
+- [ ] **Step 9: Human review checkpoint.** Confirm this is the only task changing `backend/requirements.txt` and calendar time affects no authorization or stored due instant. Run `git diff --check` and `git status --short`; report exact modified files, prerequisite result, RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 8: Queue list API and query validation
 
@@ -364,7 +370,7 @@
 
 - [ ] **Step 6: Refactor only to avoid duplicated parameter-combination checks.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm noncalendar validation rejects supplied zones without IANA resolution and pagination occurs after all filters. Commit after review: `feat: expose action queue filters`.
+- [ ] **Step 7: Human review checkpoint.** Confirm noncalendar validation rejects supplied zones without IANA resolution and pagination occurs after all filters. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 9: Frontend Action API and type foundation
 
@@ -405,7 +411,7 @@
 
 - [ ] **Step 6: Refactor only to retain one Action request/error-normalization path.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm browser timezone is sent only for calendar queues and no omission-based follow-up preservation can occur. Commit after review: `feat: add follow-up frontend API contracts`.
+- [ ] **Step 7: Human review checkpoint.** Confirm browser timezone is sent only for calendar queues and no omission-based follow-up preservation can occur. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 10: Action queue operational UX
 
@@ -447,7 +453,7 @@
 
 - [ ] **Step 6: Refactor only to extract a small display formatter shared by the Action queue and card.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm responsive existing layout conventions, explicit loading/empty/error states, and no out-of-scope visual system. Commit after review: `feat: add operational action queue views`.
+- [ ] **Step 7: Human review checkpoint.** Confirm responsive existing layout conventions, explicit loading/empty/error states, and no out-of-scope visual system. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 11: Follow-up editing and completion UX
 
@@ -493,7 +499,7 @@
 
 - [ ] **Step 6: Refactor only to share card behavior without duplicating request state or conflict logic.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm the UI does not offer disabled members as new targets, cannot omit a preserved follow-up field, and has no automatic stale overwrite. Commit after review: `feat: add human action follow-up controls`.
+- [ ] **Step 7: Human review checkpoint.** Confirm the UI does not offer disabled members as new targets, cannot omit a preserved follow-up field, and has no automatic stale overwrite. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 12: Cross-flow security and regression coverage
 
@@ -544,7 +550,7 @@
 
 - [ ] **Step 6: Refactor only if a test helper reduces repeated security setup without obscuring the adversarial assertion.**
 
-- [ ] **Step 7: Review checkpoint.** Confirm this task closes integration gaps only and introduces no new product capability. Commit after review: `test: cover follow-up security regressions`.
+- [ ] **Step 7: Human review checkpoint.** Confirm this task closes integration gaps only and introduces no new product capability. Run `git diff --check` and `git status --short`; report exact modified files and RED/GREEN/regression results; then STOP for human approval. Do not stage, commit, push, create a PR, merge, or deploy.
 
 ### Task 13: Full verification and human review gate
 
@@ -605,10 +611,10 @@
 
   Run: `git status --short`
 
-  Expected: no whitespace errors; inspect every intended implementation file before any implementation commit. Do not call paid providers, deploy, push, or create a PR.
+  Expected: no whitespace errors; inspect every intended implementation file before requesting later release authorization. Do not call paid providers, deploy, push, or create a PR.
 
-- [ ] **Step 7: Human review checkpoint.** Present the focused/full test results, migration evidence, exact diff, and known limitations for human review. Do not claim deployment readiness solely from tests. End implementation before any push if the repository's human-review flow requires it.
+- [ ] **Step 7: Human pre-commit diff review checkpoint.** Present the focused/full test results, migration evidence, exact diff, and known limitations for human review. Report `READY FOR HUMAN PRE-COMMIT DIFF REVIEW`; then STOP. Do not stage, commit, push, create a PR, merge, deploy, or claim deployment readiness solely from tests.
 
 ## Execution Strategy
 
-Use `superpowers:subagent-driven-development`: this workflow has separable migration, backend contract, concurrency/security, and frontend slices, each with a fresh review checkpoint. Implement on a **new feature branch created from the approved local `main` state only after this plan passes human review**. Do not create that branch during planning, do not push during implementation without fresh authorization, and keep all human-control invariants as acceptance gates.
+Use `superpowers:subagent-driven-development`: this workflow has separable migration, backend contract, concurrency/security, and frontend slices, each with a fresh review checkpoint. Only after this plan passes human review, create a new feature branch from approved local `main` that contains the approved spec and plan history; execute Task 1 only, then STOP for human review. Continue one human-approved task at a time, keep implementation changes uncommitted at every checkpoint unless a later explicit authorization says otherwise, and never reuse `feat/controlled-inference-admission` or implement directly on `main`. No implementation task may commit, push, create a PR, merge, or deploy without a later explicit human-authorized release prompt. The later guarded release sequence is: implementation complete → full verification → human diff review → explicit release authorization → explicit staging → commit → normal push → PR → guarded merge.
