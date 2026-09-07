@@ -1,11 +1,40 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasPath, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 ActionItemStatus = Literal["open", "in_progress", "completed", "dismissed"]
+ActionQueue = Literal[
+    "open",
+    "due_today",
+    "overdue",
+    "upcoming",
+    "completed",
+    "no_due_date",
+]
+
+
+class AssigneeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    membership_id: str = Field(validation_alias="id")
+    display_name: str | None = Field(validation_alias=AliasPath("user", "display_name"))
+    email: str | None = Field(validation_alias=AliasPath("user", "email"))
+    role: Literal["owner", "member"]
+    status: Literal["active", "disabled"]
+
+
+class WorkspaceMemberResponse(BaseModel):
+    membership_id: str
+    display_name: str | None
+    email: str | None
+    role: Literal["owner", "member"]
+
+
+class WorkspaceMemberListResponse(BaseModel):
+    items: list[WorkspaceMemberResponse]
 
 
 class MaterializeActionsRequest(BaseModel):
@@ -43,9 +72,23 @@ class ActionItemResponse(BaseModel):
     linked_finding_ids: list[str]
     due_at: datetime | None
     completed_at: datetime | None
+    assignee_membership_id: str | None
+    completion_outcome: str | None
+    assignee: AssigneeResponse | None = Field(
+        default=None, validation_alias="assignee_membership"
+    )
     created_at: datetime
     updated_at: datetime
     version: int
+
+    @field_validator("due_at", "completed_at")
+    @classmethod
+    def normalize_datetime_for_response(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class MaterializeActionsResponse(BaseModel):
@@ -67,3 +110,23 @@ class ActionStatusUpdateRequest(BaseModel):
 
     status: ActionItemStatus
     expected_version: int = Field(ge=1)
+    completion_outcome: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("completion_outcome", mode="before")
+    @classmethod
+    def normalize_completion_outcome(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+class ActionFollowUpUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assignee_membership_id: str | None = Field(min_length=36, max_length=36)
+    due_at: datetime | None
+    expected_version: int = Field(ge=1)
+
+    @field_validator("due_at")
+    @classmethod
+    def require_timezone_aware_due_at(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("due_at must include a timezone offset")
+        return value

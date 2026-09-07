@@ -83,3 +83,7 @@ class WorkspaceMembershipRecord(Base):
 
     workspace: Mapped[WorkspaceRecord] = relationship(back_populates="memberships")
     user: Mapped["UserRecord"] = relationship(back_populates="memberships")  # noqa: F821
+    assigned_action_items: Mapped[list["ActionItemRecord"]] = relationship(  # noqa: F821
+        back_populates="assignee_membership",
+        passive_deletes="all",
+    )

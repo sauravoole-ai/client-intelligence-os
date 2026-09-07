@@ -97,6 +97,24 @@ export interface PersistedAnalysisResponse extends AnalysisResponse {
 }
 
 export type ActionItemStatus = 'open' | 'in_progress' | 'completed' | 'dismissed';
+export type ActionQueue = 'open' | 'due_today' | 'overdue' | 'upcoming' | 'completed' | 'no_due_date';
+
+export interface ActionAssignee {
+  membership_id: string;
+  display_name: string | null;
+  email: string | null;
+  role: 'owner' | 'member';
+  status: 'active' | 'disabled';
+}
+
+export interface WorkspaceMember {
+  membership_id: string;
+  display_name: string | null;
+  email: string | null;
+  role: 'owner' | 'member';
+}
+
+export interface WorkspaceMemberListResponse { items: WorkspaceMember[]; }
 
 export interface ActionItem {
   id: string;
@@ -110,6 +128,9 @@ export interface ActionItem {
   linked_finding_ids: string[];
   due_at: string | null;
   completed_at: string | null;
+  assignee_membership_id: string | null;
+  completion_outcome: string | null;
+  assignee: ActionAssignee | null;
   created_at: string;
   updated_at: string;
   version: number;
@@ -131,6 +152,23 @@ export interface ActionItemListResponse {
 export interface ActionStatusUpdateRequest {
   status: ActionItemStatus;
   expected_version: number;
+  completion_outcome?: string | null;
+}
+
+export interface ActionFollowUpUpdateRequest {
+  assignee_membership_id: string | null;
+  due_at: string | null;
+  expected_version: number;
+}
+
+export interface ActionListFilters {
+  queue?: ActionQueue;
+  time_zone?: string;
+  status?: ActionItemStatus;
+  client_id?: string;
+  assignee_membership_id?: string;
+  offset?: number;
+  limit?: number;
 }
 
 export type ClientStatus = 'active' | 'archived';

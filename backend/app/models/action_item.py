@@ -62,6 +62,13 @@ class ActionItemRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    assignee_membership_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("workspace_memberships.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    completion_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -80,4 +87,7 @@ class ActionItemRecord(Base):
     )
     workspace: Mapped["WorkspaceRecord | None"] = relationship(  # noqa: F821
         back_populates="action_items"
+    )
+    assignee_membership: Mapped["WorkspaceMembershipRecord | None"] = relationship(  # noqa: F821
+        back_populates="assigned_action_items"
     )

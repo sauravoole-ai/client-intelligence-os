@@ -4,12 +4,13 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import backend.app.models  # noqa: F401
 from backend.app.db.base import Base
+from backend.app.models import ActionItemRecord, WorkspaceMembershipRecord
 from backend.app.repositories import (
     action_item_repository,
     analysis_repository,
@@ -17,7 +18,7 @@ from backend.app.repositories import (
 )
 
 
-ACCESS_CONTROL_REVISION = "0005_access_control_foundation"
+FOLLOW_UP_REVISION = "0006_human_controlled_follow_up"
 
 
 def make_alembic_config(database_path: Path) -> Config:
@@ -31,6 +32,16 @@ def make_alembic_config(database_path: Path) -> Config:
 
 def migrate(database_path: Path, revision: str = "head") -> None:
     command.upgrade(make_alembic_config(database_path), revision)
+
+
+def foreign_key_engine(database_path: Path):
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    return engine
 
 
 def test_access_control_migration_creates_identity_workspace_and_session_schema(
@@ -119,6 +130,161 @@ def test_access_control_migration_creates_identity_workspace_and_session_schema(
     assert {("user_id", "users"), ("active_workspace_id", "workspaces")} <= foreign_keys["app_sessions"]
 
     engine.dispose()
+
+
+def test_follow_up_migration_adds_nullable_assignment_and_outcome_schema(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "follow-up-schema.sqlite"
+
+    migrate(database_path)
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    inspector = inspect(engine)
+    action_items = {
+        column["name"]: column
+        for column in inspector.get_columns("action_items")
+    }
+    foreign_keys = {
+        item["constrained_columns"][0]: item
+        for item in inspector.get_foreign_keys("action_items")
+    }
+    indexes = {item["name"] for item in inspector.get_indexes("action_items")}
+    try:
+        assert action_items["assignee_membership_id"]["nullable"]
+        assert action_items["assignee_membership_id"]["type"].length == 36
+        assert action_items["completion_outcome"]["nullable"]
+        assert foreign_keys["assignee_membership_id"]["referred_table"] == "workspace_memberships"
+        assert foreign_keys["assignee_membership_id"]["referred_columns"] == ["id"]
+        assert foreign_keys["assignee_membership_id"]["options"]["ondelete"] == "RESTRICT"
+        assert "ix_action_items_assignee_membership_id" in indexes
+    finally:
+        engine.dispose()
+
+
+def test_follow_up_migration_restricts_referenced_membership_deletion(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "follow-up-restrict.sqlite"
+    migrate(database_path)
+    engine = foreign_key_engine(database_path)
+    now = datetime.now(timezone.utc)
+
+    try:
+        with engine.begin() as connection:
+            assert connection.scalar(text("PRAGMA foreign_keys")) == 1
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, identity_issuer, identity_subject, created_at, updated_at) "
+                    "VALUES ('user-1', 'https://issuer.example', 'subject-1', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO workspaces (id, name, created_at, updated_at) "
+                    "VALUES ('workspace-1', 'Workspace A', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO workspace_memberships (id, workspace_id, user_id, role, status, created_at, updated_at) "
+                    "VALUES ('membership-1', 'workspace-1', 'user-1', 'owner', 'active', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO analyses (id, client_reference, client_id, workspace_id, conversation, engine_mode_requested, engine_used, analysis_output, validation_warnings, fallback_reason, prompt_version, created_at, review_status, review_version) "
+                    "VALUES ('analysis-1', NULL, NULL, 'workspace-1', 'Conversation', 'deterministic', 'deterministic', '{}', '[]', NULL, 'v1', :now, 'approved', 1)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO action_items (id, analysis_id, client_id, workspace_id, source_action_id, title, description, priority, status, linked_finding_ids, assignee_membership_id, completion_outcome, created_at, updated_at, version) "
+                    "VALUES ('action-1', 'analysis-1', NULL, 'workspace-1', 'source-1', 'Action', 'Description', 1, 'open', '[]', 'membership-1', NULL, :now, :now, 1)"
+                ),
+                {"now": now},
+            )
+
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    text("DELETE FROM workspace_memberships WHERE id = 'membership-1'")
+                )
+    finally:
+        engine.dispose()
+
+
+def test_follow_up_migration_prevents_orm_membership_deletion(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "follow-up-orm-restrict.sqlite"
+    migrate(database_path)
+    engine = foreign_key_engine(database_path)
+    now = datetime.now(timezone.utc)
+
+    try:
+        with engine.begin() as connection:
+            assert connection.scalar(text("PRAGMA foreign_keys")) == 1
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, identity_issuer, identity_subject, created_at, updated_at) "
+                    "VALUES ('user-1', 'https://issuer.example', 'subject-1', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO workspaces (id, name, created_at, updated_at) "
+                    "VALUES ('workspace-1', 'Workspace A', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO workspace_memberships (id, workspace_id, user_id, role, status, created_at, updated_at) "
+                    "VALUES ('membership-1', 'workspace-1', 'user-1', 'owner', 'active', :now, :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO analyses (id, client_reference, client_id, workspace_id, conversation, engine_mode_requested, engine_used, analysis_output, validation_warnings, fallback_reason, prompt_version, created_at, review_status, review_version) "
+                    "VALUES ('analysis-1', NULL, NULL, 'workspace-1', 'Conversation', 'deterministic', 'deterministic', '{}', '[]', NULL, 'v1', :now, 'approved', 1)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO action_items (id, analysis_id, client_id, workspace_id, source_action_id, title, description, priority, status, linked_finding_ids, assignee_membership_id, completion_outcome, created_at, updated_at, version) "
+                    "VALUES ('action-1', 'analysis-1', NULL, 'workspace-1', 'source-1', 'Action', 'Description', 1, 'open', '[]', 'membership-1', NULL, :now, :now, 1)"
+                ),
+                {"now": now},
+            )
+
+        with Session(engine) as session:
+            membership = session.get(WorkspaceMembershipRecord, "membership-1")
+            action_item = session.get(ActionItemRecord, "action-1")
+            assert membership is not None
+            assert action_item is not None
+            assert action_item.assignee_membership_id == "membership-1"
+
+            session.delete(membership)
+            with pytest.raises(IntegrityError):
+                session.flush()
+            session.rollback()
+
+        with Session(engine) as session:
+            membership = session.get(WorkspaceMembershipRecord, "membership-1")
+            action_item = session.get(ActionItemRecord, "action-1")
+            assert membership is not None
+            assert action_item is not None
+            assert action_item.assignee_membership_id == "membership-1"
+    finally:
+        engine.dispose()
 
 
 def test_access_control_constraints_reject_duplicate_and_invalid_memberships_and_sessions(
@@ -222,6 +388,8 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
     database_path = tmp_path / "access-control-round-trip.sqlite"
     migrate(database_path, "0004_action_items")
     now = datetime(2026, 8, 26, tzinfo=timezone.utc)
+    due_at = datetime(2026, 8, 27, 9, 30, tzinfo=timezone.utc)
+    completed_at = datetime(2026, 8, 28, 11, 45, tzinfo=timezone.utc)
 
     with create_engine(f"sqlite:///{database_path.as_posix()}").begin() as connection:
         connection.execute(
@@ -241,12 +409,22 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
         connection.execute(
             text(
                 "INSERT INTO action_items (id, analysis_id, client_id, source_action_id, title, description, priority, status, linked_finding_ids, due_at, completed_at, created_at, updated_at, version) VALUES "
-                "('legacy-action', 'legacy-analysis', 'legacy-client', 'legacy-source-action', 'Legacy preservation action', 'Preserve this legacy action', 2, 'open', '[\"finding-legacy\"]', NULL, NULL, :now, :now, 3)"
+                "('legacy-action', 'legacy-analysis', 'legacy-client', 'legacy-source-action', 'Legacy preservation action', 'Preserve this legacy action', 2, 'completed', '[\"finding-legacy\"]', :due_at, :completed_at, :now, :now, 3)"
             ),
-            {"now": now},
+            {"now": now, "due_at": due_at, "completed_at": completed_at},
         )
 
-    migrate(database_path, ACCESS_CONTROL_REVISION)
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.connect() as connection:
+        legacy_lifecycle_values = connection.execute(
+            text(
+                "SELECT status, due_at, completed_at, version FROM action_items "
+                "WHERE id = 'legacy-action'"
+            )
+        ).one()
+    engine.dispose()
+
+    migrate(database_path, FOLLOW_UP_REVISION)
 
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     with engine.connect() as connection:
@@ -262,7 +440,7 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
         ).one()
         action_after_upgrade = connection.execute(
             text(
-                "SELECT analysis_id, client_id, source_action_id, title, description, priority, status, linked_finding_ids, version, workspace_id FROM action_items WHERE id = 'legacy-action'"
+                "SELECT analysis_id, client_id, source_action_id, title, description, priority, status, due_at, completed_at, version, workspace_id, assignee_membership_id, completion_outcome FROM action_items WHERE id = 'legacy-action'"
             )
         ).one()
     engine.dispose()
@@ -293,9 +471,9 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
         "Legacy preservation action",
         "Preserve this legacy action",
         2,
-        "open",
-        '["finding-legacy"]',
-        3,
+        *legacy_lifecycle_values,
+        None,
+        None,
         None,
     )
 
@@ -316,7 +494,7 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
         ).one()
         action_after_downgrade = connection.execute(
             text(
-                "SELECT analysis_id, client_id, source_action_id, title, description, priority, status, linked_finding_ids, version FROM action_items WHERE id = 'legacy-action'"
+                "SELECT analysis_id, client_id, source_action_id, title, description, priority, status, due_at, completed_at, version FROM action_items WHERE id = 'legacy-action'"
             )
         ).one()
         current_revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
@@ -332,7 +510,7 @@ def test_access_control_upgrade_and_downgrade_preserve_legacy_client_analysis_an
         "active",
     )
     assert analysis_after_downgrade == analysis_after_upgrade[:9]
-    assert action_after_downgrade == action_after_upgrade[:9]
+    assert action_after_downgrade == action_after_upgrade[:10]
     assert "workspace_id" not in client_columns
     assert {"workspace_id", "reviewed_by_user_id"}.isdisjoint(analysis_columns)
     assert "workspace_id" not in action_columns

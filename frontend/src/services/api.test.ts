@@ -22,7 +22,9 @@ import {
   listActions,
   listAnalysisActions,
   listClientActions,
+  listWorkspaceMembers,
   materializeAnalysisActions,
+  updateActionFollowUp,
   updateActionStatus,
 } from './api';
 
@@ -115,7 +117,7 @@ const clientResponse: Client = {
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-02T00:00:00Z',
 };
-const actionItem = { id: 'action-item-1', analysis_id: analysisResponse.analysis_id, client_id: null, source_action_id: 'action-1', title: 'Follow up', description: 'Stored rationale', priority: 1, status: 'open' as const, linked_finding_ids: ['finding-1'], due_at: null, completed_at: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
+const actionItem = { id: 'action-item-1', analysis_id: analysisResponse.analysis_id, client_id: null, source_action_id: 'action-1', title: 'Follow up', description: 'Stored rationale', priority: 1, status: 'open' as const, linked_finding_ids: ['finding-1'], due_at: null, completed_at: null, assignee_membership_id: null, completion_outcome: null, assignee: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
 
 const reviewResponse: AnalysisReviewResponse = {
   analysis_id: analysisResponse.analysis_id,
@@ -478,14 +480,60 @@ describe('action API', () => {
     await listActions({ status: 'in_progress', client_id: 'client/id' });
     expect(fetchMock.mock.calls[0][0]).toContain('status=in_progress'); expect(fetchMock.mock.calls[0][0]).toContain('client_id=client%2Fid');
   });
+  it('serializes every queue and uses the browser zone only for calendar queues', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({ items: [], offset: 0, limit: 20, returned_count: 0 }))); vi.stubGlobal('fetch', fetchMock);
+    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    for (const queue of ['open', 'due_today', 'overdue', 'upcoming', 'completed', 'no_due_date'] as const) await listActions({ queue });
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain('queue=open'); expect(urls[0]).not.toContain('time_zone=');
+    expect(urls[1]).toContain('queue=due_today'); expect(urls[1]).toContain(`time_zone=${encodeURIComponent(browserTimeZone)}`);
+    expect(urls[3]).toContain('queue=upcoming'); expect(urls[3]).toContain(`time_zone=${encodeURIComponent(browserTimeZone)}`);
+    expect(urls[2]).not.toContain('time_zone='); expect(urls[4]).not.toContain('time_zone='); expect(urls[5]).not.toContain('time_zone=');
+  });
+  it('serializes queue secondary filters and omits absent values', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [], offset: 0, limit: 20, returned_count: 0 })); vi.stubGlobal('fetch', fetchMock);
+    await listActions({ queue: 'due_today', time_zone: 'Asia/Kolkata', status: 'open', client_id: 'client/id', assignee_membership_id: 'member/id' });
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('queue=due_today'); expect(url).toContain('time_zone=Asia%2FKolkata'); expect(url).toContain('status=open'); expect(url).toContain('client_id=client%2Fid'); expect(url).toContain('assignee_membership_id=member%2Fid');
+    expect(url).not.toContain('undefined'); expect(url).not.toContain('null');
+  });
+  it('lists workspace members and preserves nullable display data', async () => {
+    const response = { items: [{ membership_id: 'member-1', display_name: 'Ada', email: null, role: 'member' }, { membership_id: 'member-2', display_name: null, email: 'member@example.test', role: 'owner' }] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response)); vi.stubGlobal('fetch', fetchMock);
+    await expect(listWorkspaceMembers()).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/workspace/members', expect.objectContaining({ credentials: 'same-origin' }));
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).has('X-CSRF-Token')).toBe(false);
+  });
+  it('rejects malformed workspace member and Action Item responses', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ items: [{ membership_id: 'member-1', display_name: 'Ada', email: null }] })));
+    await expect(listWorkspaceMembers()).rejects.toThrow('invalid response');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...actionItem, assignee_membership_id: undefined })));
+    await expect(getAction(actionItem.id)).rejects.toThrow('invalid response');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...actionItem, assignee: { membership_id: 'member-1', display_name: null, email: null, role: 'member', status: 'unknown' } })));
+    await expect(getAction(actionItem.id)).rejects.toThrow('invalid response');
+  });
+  it('sends complete follow-up PUT bodies and preserves API errors', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(actionItem)); vi.stubGlobal('fetch', fetchMock);
+    await updateActionFollowUp(actionItem.id, { assignee_membership_id: null, due_at: null, expected_version: 3 });
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/actions/action-item-1/follow-up', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ assignee_membership_id: null, due_at: null, expected_version: 3 }) }));
+    fetchMock.mockResolvedValueOnce(new Response('private', { status: 409 })); await expect(updateActionFollowUp('id', { assignee_membership_id: 'member-1', due_at: '2026-09-02T09:30:00+05:30', expected_version: 4 })).rejects.toBeInstanceOf(ActionStatusConflictError);
+    fetchMock.mockResolvedValueOnce(new Response('private', { status: 422 })); await expect(updateActionFollowUp('id', { assignee_membership_id: null, due_at: null, expected_version: 4 })).rejects.toThrow('could not be validated');
+  });
   it('encodes action, analysis, and client IDs', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(actionItem)); vi.stubGlobal('fetch', fetchMock); await getAction('item/id'); expect(fetchMock.mock.calls[0][0]).toContain('item%2Fid');
     fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({ items: [], offset: 0, limit: 100, returned_count: 0 }))); await listAnalysisActions('analysis/id'); await listClientActions('client/id'); expect(fetchMock.mock.calls[1][0]).toContain('analysis%2Fid'); expect(fetchMock.mock.calls[2][0]).toContain('client%2Fid');
   });
   it('updates status using PUT and expected version', async () => {
     const updated = { ...actionItem, status: 'completed' as const, version: 2, completed_at: '2026-01-02T00:00:00Z' }; const fetchMock = vi.fn().mockResolvedValue(jsonResponse(updated)); vi.stubGlobal('fetch', fetchMock);
-    await expect(updateActionStatus(actionItem.id, { status: 'completed', expected_version: 1 })).resolves.toEqual(updated);
-    expect(fetchMock).toHaveBeenCalledWith('/api/v1/actions/action-item-1/status', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ status: 'completed', expected_version: 1 }) }));
+    await expect(updateActionStatus(actionItem.id, { status: 'completed', completion_outcome: 'Resolved', expected_version: 1 })).resolves.toEqual(updated);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/actions/action-item-1/status', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ status: 'completed', completion_outcome: 'Resolved', expected_version: 1 }) }));
+  });
+  it('preserves null and omitted completion outcomes for non-completed status updates', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(actionItem))); vi.stubGlobal('fetch', fetchMock);
+    await updateActionStatus(actionItem.id, { status: 'open', completion_outcome: null, expected_version: 2 });
+    await updateActionStatus(actionItem.id, { status: 'open', expected_version: 3 });
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ status: 'open', completion_outcome: null, expected_version: 2 }) }));
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({ body: JSON.stringify({ status: 'open', expected_version: 3 }) }));
   });
   it('represents conflict safely and sanitizes HTTP failures', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private', { status: 409 }))); await expect(updateActionStatus('id', { status: 'open', expected_version: 1 })).rejects.toBeInstanceOf(ActionStatusConflictError);
@@ -527,16 +575,19 @@ describe('auth-aware API behavior', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse(clientResponse, 201))
       .mockResolvedValueOnce(jsonResponse({ ...actionItem, status: 'completed', version: 2, completed_at: '2026-01-02T00:00:00Z' }))
+      .mockResolvedValueOnce(jsonResponse(actionItem))
       .mockResolvedValueOnce(jsonResponse({ items: [], offset: 0, limit: 20, returned_count: 0 }));
     vi.stubGlobal('fetch', fetchMock);
 
     await createClient({ display_name: 'Ada Client' });
     await updateActionStatus(actionItem.id, { status: 'completed', expected_version: 1 });
+    await updateActionFollowUp(actionItem.id, { assignee_membership_id: null, due_at: null, expected_version: 1 });
     await listClients();
 
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
     expect(new Headers(fetchMock.mock.calls[1][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
-    expect(new Headers(fetchMock.mock.calls[2][1].headers).has('X-CSRF-Token')).toBe(false);
+    expect(new Headers(fetchMock.mock.calls[2][1].headers).get('X-CSRF-Token')).toBe(session.csrf_token);
+    expect(new Headers(fetchMock.mock.calls[3][1].headers).has('X-CSRF-Token')).toBe(false);
   });
 
   it('invalidates on protected 401s but preserves the authenticated state for 403s', async () => {

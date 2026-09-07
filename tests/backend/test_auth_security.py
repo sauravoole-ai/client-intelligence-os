@@ -16,6 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from backend.app.api.routes import analyses as analyses_route
 from backend.app.api.routes import auth as auth_route
+from backend.app.api.routes import workspace as workspace_route
 from backend.app.core.config import Settings, settings
 from backend.app.db.base import Base
 from backend.app.db.session import get_db_session
@@ -26,6 +27,10 @@ from backend.app.models.app_session import AppSessionRecord
 from backend.app.models.client import ClientRecord
 from backend.app.models.user import UserRecord
 from backend.app.models.workspace import WorkspaceMembershipRecord, WorkspaceRecord
+from backend.app.repositories.workspace_membership_repository import (
+    get_membership_for_workspace,
+    list_active_members_for_workspace,
+)
 from backend.app.security.sessions import (
     create_application_session,
     csrf_token_for_session,
@@ -191,6 +196,201 @@ def test_business_routes_reject_missing_application_session(client: TestClient) 
     response = client.get("/api/v1/clients")
 
     assert response.status_code == 401
+
+
+def add_workspace_member(
+    session: Session,
+    *,
+    workspace_id: str,
+    membership_id: str,
+    user_id: str,
+    display_name: str | None,
+    email: str | None,
+    status: str,
+    created_at: datetime,
+) -> WorkspaceMembershipRecord:
+    user = UserRecord(
+        id=user_id,
+        identity_issuer="https://issuer.example/",
+        identity_subject=user_id,
+        display_name=display_name,
+        email=email,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    membership = WorkspaceMembershipRecord(
+        id=membership_id,
+        workspace_id=workspace_id,
+        user=user,
+        role="member",
+        status=status,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    session.add(membership)
+    return membership
+
+
+def test_workspace_membership_repository_scopes_active_list_and_lookup(
+    authenticated_client: tuple[TestClient, sessionmaker[Session], str, str, str],
+) -> None:
+    _client, factory, user_id, workspace_id, _token = authenticated_client
+    now = datetime.now(timezone.utc)
+    active_id = str(uuid4())
+    disabled_id = str(uuid4())
+    foreign_workspace_id = str(uuid4())
+    foreign_id = str(uuid4())
+    with factory() as session:
+        owner_membership_id = session.scalar(
+            select(WorkspaceMembershipRecord.id).where(
+                WorkspaceMembershipRecord.workspace_id == workspace_id,
+                WorkspaceMembershipRecord.user_id == user_id,
+            )
+        )
+        assert owner_membership_id is not None
+        add_workspace_member(
+            session,
+            workspace_id=workspace_id,
+            membership_id=active_id,
+            user_id=str(uuid4()),
+            display_name=None,
+            email=None,
+            status="active",
+            created_at=now,
+        )
+        add_workspace_member(
+            session,
+            workspace_id=workspace_id,
+            membership_id=disabled_id,
+            user_id=str(uuid4()),
+            display_name="Disabled Member",
+            email="disabled@example.test",
+            status="disabled",
+            created_at=now,
+        )
+        foreign_workspace = WorkspaceRecord(
+            id=foreign_workspace_id,
+            name="Foreign Workspace",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(foreign_workspace)
+        add_workspace_member(
+            session,
+            workspace_id=foreign_workspace_id,
+            membership_id=foreign_id,
+            user_id=str(uuid4()),
+            display_name="Foreign Member",
+            email="foreign@example.test",
+            status="active",
+            created_at=now,
+        )
+        session.commit()
+
+    with factory() as session:
+        active_members = list_active_members_for_workspace(
+            session, workspace_id=workspace_id
+        )
+        assert [member.id for member in active_members] == [
+            active_id,
+            owner_membership_id,
+        ]
+        active = next(member for member in active_members if member.id == active_id)
+        assert (active.user.display_name, active.user.email, active.role) == (None, None, "member")
+        assert disabled_id not in {member.id for member in active_members}
+        assert foreign_id not in {member.id for member in active_members}
+        assert get_membership_for_workspace(
+            session, membership_id=active_id, workspace_id=workspace_id
+        ) is not None
+        disabled = get_membership_for_workspace(
+            session, membership_id=disabled_id, workspace_id=workspace_id
+        )
+        assert disabled is not None and disabled.status == "disabled"
+        assert get_membership_for_workspace(
+            session, membership_id=foreign_id, workspace_id=workspace_id
+        ) is None
+        assert get_membership_for_workspace(
+            session, membership_id=str(uuid4()), workspace_id=workspace_id
+        ) is None
+
+
+def test_workspace_member_picker_returns_only_current_workspace_active_members(
+    authenticated_client: tuple[TestClient, sessionmaker[Session], str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, factory, _user_id, workspace_id, _token = authenticated_client
+    now = datetime.now(timezone.utc)
+    active_id = str(uuid4())
+    disabled_id = str(uuid4())
+    foreign_workspace_id = str(uuid4())
+    with factory() as session:
+        add_workspace_member(
+            session,
+            workspace_id=workspace_id,
+            membership_id=active_id,
+            user_id=str(uuid4()),
+            display_name=None,
+            email=None,
+            status="active",
+            created_at=now,
+        )
+        add_workspace_member(
+            session,
+            workspace_id=workspace_id,
+            membership_id=disabled_id,
+            user_id=str(uuid4()),
+            display_name="Disabled Member",
+            email="disabled@example.test",
+            status="disabled",
+            created_at=now,
+        )
+        session.add(WorkspaceRecord(
+            id=foreign_workspace_id,
+            name="Foreign Workspace",
+            created_at=now,
+            updated_at=now,
+        ))
+        add_workspace_member(
+            session,
+            workspace_id=foreign_workspace_id,
+            membership_id=str(uuid4()),
+            user_id=str(uuid4()),
+            display_name="Foreign Member",
+            email="foreign@example.test",
+            status="active",
+            created_at=now,
+        )
+        session.commit()
+
+    read_workspaces: list[str] = []
+    monkeypatch.setattr(
+        workspace_route,
+        "admit_workspace_read",
+        lambda _request, admitted_workspace_id: read_workspaces.append(admitted_workspace_id),
+    )
+    client.headers.pop("X-CSRF-Token")
+    response = client.get("/api/v1/workspace/members")
+
+    assert response.status_code == 200
+    assert read_workspaces == [workspace_id]
+    members = response.json()["items"]
+    assert active_id in {member["membership_id"] for member in members}
+    assert disabled_id not in {member["membership_id"] for member in members}
+    selected = next(member for member in members if member["membership_id"] == active_id)
+    assert selected == {
+        "membership_id": active_id,
+        "display_name": None,
+        "email": None,
+        "role": "member",
+    }
+    assert client.get(
+        f"/api/v1/workspace/members?workspace_id={foreign_workspace_id}"
+    ).status_code == 422
+    assert client.get("/api/v1/workspace/members?status=disabled").status_code == 422
+
+
+def test_workspace_member_picker_requires_authentication(client: TestClient) -> None:
+    assert client.get("/api/v1/workspace/members").status_code == 401
 
 
 def test_production_configuration_rejects_insecure_application_cookies() -> None:

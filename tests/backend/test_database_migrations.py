@@ -3,6 +3,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +16,6 @@ BASELINE_REVISION = "0001_analysis_baseline"
 REVIEW_REVISION = "0002_analysis_review_fields"
 CLIENT_REVISION = "0003_client_foundation"
 ACTION_REVISION = "0004_action_items"
-ACCESS_CONTROL_REVISION = "0005_access_control_foundation"
 REVIEW_COLUMNS = {
     "review_status",
     "review_note",
@@ -24,6 +24,9 @@ REVIEW_COLUMNS = {
 }
 RECORD_ID = "00000000-0000-4000-8000-000000000002"
 PRIVATE_CONVERSATION = "Private existing conversation"
+LEGACY_ACTION_ID = "00000000-0000-4000-8000-000000000003"
+LEGACY_ACTION_DUE_AT = datetime(2026, 9, 15, 9, 30, tzinfo=timezone.utc)
+LEGACY_ACTION_COMPLETED_AT = datetime(2026, 9, 16, 10, 45, tzinfo=timezone.utc)
 
 
 def make_alembic_config(database_path: Path) -> Config:
@@ -38,6 +41,12 @@ def make_alembic_config(database_path: Path) -> Config:
 
 def migrate(database_path: Path, revision: str) -> None:
     command.upgrade(make_alembic_config(database_path), revision)
+
+
+def repository_migration_head(database_path: Path) -> str:
+    return ScriptDirectory.from_config(
+        make_alembic_config(database_path)
+    ).get_current_head()
 
 
 def insert_baseline_record(database_path: Path) -> None:
@@ -107,7 +116,7 @@ def test_fresh_database_upgrades_to_review_head(tmp_path: Path) -> None:
         "ix_analyses_review_status",
         "ix_analyses_workspace_id",
     }
-    assert current_revision == ACCESS_CONTROL_REVISION
+    assert current_revision == repository_migration_head(database_path)
 
 
 def test_migrated_columns_match_current_orm_model(tmp_path: Path) -> None:
@@ -362,6 +371,34 @@ def test_action_migration_schema_preserves_existing_data_and_creates_no_actions(
         )
     engine.dispose()
 
+    migrate(database_path, "0005_access_control_foundation")
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO action_items (
+                    id, analysis_id, client_id, source_action_id, title,
+                    description, priority, status, linked_finding_ids, due_at,
+                    completed_at, created_at, updated_at, version, workspace_id
+                ) VALUES (
+                    :id, :analysis_id, NULL, 'legacy-action', 'Keep legacy action',
+                    'Pre-existing action data', 2, 'completed', '[]', :due_at,
+                    :completed_at, :created_at, :updated_at, 7, NULL
+                )
+                """
+            ),
+            {
+                "id": LEGACY_ACTION_ID,
+                "analysis_id": RECORD_ID,
+                "due_at": LEGACY_ACTION_DUE_AT,
+                "completed_at": LEGACY_ACTION_COMPLETED_AT,
+                "created_at": LEGACY_ACTION_DUE_AT,
+                "updated_at": LEGACY_ACTION_COMPLETED_AT,
+            },
+        )
+    engine.dispose()
+
     migrate(database_path, "head")
     engine = create_engine(f"sqlite:///{database_path.as_posix()}")
     inspector = inspect(engine)
@@ -380,21 +417,47 @@ def test_action_migration_schema_preserves_existing_data_and_creates_no_actions(
             {"record_id": RECORD_ID},
         ).one()
         action_count = connection.scalar(text("SELECT COUNT(*) FROM action_items"))
+        legacy_action = connection.execute(
+            text(
+                """
+                SELECT status, version, due_at, completed_at,
+                       assignee_membership_id, completion_outcome
+                FROM action_items WHERE id = :action_id
+                """
+            ),
+            {"action_id": LEGACY_ACTION_ID},
+        ).one()
     assert columns == {
         "id", "analysis_id", "client_id", "source_action_id", "title",
         "description", "priority", "status", "linked_finding_ids", "due_at",
         "completed_at", "created_at", "updated_at", "version", "workspace_id",
+        "assignee_membership_id", "completion_outcome",
     }
     assert indexes == {
         "ix_action_items_analysis_id", "ix_action_items_client_id",
         "ix_action_items_status", "ix_action_items_workspace_id",
+        "ix_action_items_assignee_membership_id",
     }
     assert {key["referred_table"] for key in foreign_keys} == {
-        "analyses", "clients", "workspaces"
+        "analyses", "clients", "workspaces", "workspace_memberships"
     }
     assert unique_constraints[0]["column_names"] == ["analysis_id", "source_action_id"]
     assert stored == (PRIVATE_CONVERSATION, "approved", "kept", 2)
-    assert action_count == 0
+    assert action_count == 1
+    assert legacy_action == (
+        "completed",
+        7,
+        LEGACY_ACTION_DUE_AT.isoformat(sep=" "),
+        LEGACY_ACTION_COMPLETED_AT.isoformat(sep=" "),
+        None,
+        None,
+    )
+    assert any(
+        key["constrained_columns"] == ["assignee_membership_id"]
+        and key["referred_table"] == "workspace_memberships"
+        and key["options"] == {"ondelete": "RESTRICT"}
+        for key in foreign_keys
+    )
     engine.dispose()
 
 

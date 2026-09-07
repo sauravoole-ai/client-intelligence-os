@@ -2,7 +2,10 @@ import type {
   AnalysisListResponse,
   ActionItem,
   ActionItemListResponse,
+  ActionListFilters,
+  ActionAssignee,
   ActionItemStatus,
+  ActionFollowUpUpdateRequest,
   ActionStatusUpdateRequest,
   AnalysisResponse,
   AnalysisReviewRequest,
@@ -18,6 +21,8 @@ import type {
   RiskFlag,
   MaterializeActionsRequest,
   MaterializeActionsResponse,
+  WorkspaceMember,
+  WorkspaceMemberListResponse,
   AuthenticatedSession,
 } from '../types';
 
@@ -319,9 +324,28 @@ function isActionItem(value: unknown): value is ActionItem {
     && typeof value.title === 'string' && typeof value.description === 'string'
     && typeof value.priority === 'number' && isActionStatus(value.status)
     && isStringArray(value.linked_finding_ids) && isNullableString(value.due_at)
-    && isNullableString(value.completed_at) && typeof value.created_at === 'string'
+    && isNullableString(value.completed_at) && isNullableString(value.assignee_membership_id)
+    && isNullableString(value.completion_outcome)
+    && (value.assignee === null || isActionAssignee(value.assignee)) && typeof value.created_at === 'string'
     && typeof value.updated_at === 'string' && typeof value.version === 'number'
     && Number.isInteger(value.version) && value.version >= 1;
+}
+
+function isActionAssignee(value: unknown): value is ActionAssignee {
+  return isRecord(value) && typeof value.membership_id === 'string'
+    && isNullableString(value.display_name) && isNullableString(value.email)
+    && (value.role === 'owner' || value.role === 'member')
+    && (value.status === 'active' || value.status === 'disabled');
+}
+
+function isWorkspaceMember(value: unknown): value is WorkspaceMember {
+  return isRecord(value) && typeof value.membership_id === 'string'
+    && isNullableString(value.display_name) && isNullableString(value.email)
+    && (value.role === 'owner' || value.role === 'member');
+}
+
+function isWorkspaceMemberList(value: unknown): value is WorkspaceMemberListResponse {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(isWorkspaceMember);
 }
 
 function isActionList(value: unknown): value is ActionItemListResponse {
@@ -370,16 +394,27 @@ async function actionRequest<T>(path: string, validator: (value: unknown) => val
 export function materializeAnalysisActions(analysisId: string, request: MaterializeActionsRequest, timeoutMs = 15_000) {
   return actionRequest(`/analyses/${encodeURIComponent(analysisId)}/actions`, isMaterialization, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source_action_ids: request.source_action_ids }) }, timeoutMs, 'materialize');
 }
-export function listActions(filters: { status?: ActionItemStatus; client_id?: string; offset?: number; limit?: number } = {}, timeoutMs = 15_000) {
+export function listActions(filters: ActionListFilters = {}, timeoutMs = 15_000) {
   const { offset, limit } = validatePageOptions(filters); const query = new URLSearchParams({ offset: String(offset), limit: String(limit) });
   if (filters.status) query.set('status', filters.status); if (filters.client_id) query.set('client_id', filters.client_id);
+  if (filters.assignee_membership_id) query.set('assignee_membership_id', filters.assignee_membership_id);
+  if (filters.queue) query.set('queue', filters.queue);
+  if (filters.queue === 'due_today' || filters.queue === 'upcoming') {
+    query.set('time_zone', filters.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone);
+  }
   return actionRequest(`/actions?${query}`, isActionList, {}, timeoutMs);
+}
+export function listWorkspaceMembers(timeoutMs = 15_000) {
+  return actionRequest('/workspace/members', isWorkspaceMemberList, {}, timeoutMs);
 }
 export function getAction(actionId: string, timeoutMs = 15_000) { return actionRequest(`/actions/${encodeURIComponent(actionId)}`, isActionItem, {}, timeoutMs); }
 export function listAnalysisActions(analysisId: string, timeoutMs = 15_000) { return actionRequest(`/analyses/${encodeURIComponent(analysisId)}/actions?offset=0&limit=100`, isActionList, {}, timeoutMs); }
 export function listClientActions(clientId: string, timeoutMs = 15_000) { return actionRequest(`/clients/${encodeURIComponent(clientId)}/actions?offset=0&limit=100`, isActionList, {}, timeoutMs); }
 export function updateActionStatus(actionId: string, request: ActionStatusUpdateRequest, timeoutMs = 15_000) {
   return actionRequest(`/actions/${encodeURIComponent(actionId)}/status`, isActionItem, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) }, timeoutMs);
+}
+export function updateActionFollowUp(actionId: string, request: ActionFollowUpUpdateRequest, timeoutMs = 15_000) {
+  return actionRequest(`/actions/${encodeURIComponent(actionId)}/follow-up`, isActionItem, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignee_membership_id: request.assignee_membership_id, due_at: request.due_at, expected_version: request.expected_version }) }, timeoutMs);
 }
 
 export class ClientConflictError extends Error {

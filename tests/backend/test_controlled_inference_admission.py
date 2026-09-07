@@ -274,6 +274,66 @@ def test_production_runner_explicitly_pins_one_worker_and_proxy_settings(
     }
 
 
+def test_follow_up_api_charges_mutation_policy_not_read_policy(controlled_api) -> None:
+    client, app = controlled_api
+    analysis = client.post("/api/v1/analyses", json=ANALYSIS_PAYLOAD).json()
+    assert client.put(
+        f"/api/v1/analyses/{analysis['analysis_id']}/review",
+        json={"review_status": "approved", "expected_version": 1},
+    ).status_code == 200
+    action = client.post(
+        f"/api/v1/analyses/{analysis['analysis_id']}/actions",
+        json={"source_action_ids": [analysis["recommended_actions"][0]["action_id"]]},
+    ).json()["items"][0]
+    controls = app.state.admission_controls
+    workspace_id = client._test_workspace_id  # type: ignore[attr-defined]
+    mutation_before = controls.workspace_mutation.remaining(
+        workspace_id, controls.policies.workspace_mutation
+    )
+    read_before = controls.workspace_read.remaining(
+        workspace_id, controls.policies.workspace_read
+    )
+
+    response = client.put(
+        f"/api/v1/actions/{action['id']}/follow-up",
+        json={
+            "assignee_membership_id": None,
+            "due_at": None,
+            "expected_version": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    assert controls.workspace_mutation.remaining(
+        workspace_id, controls.policies.workspace_mutation
+    ) == mutation_before - 1
+    assert controls.workspace_read.remaining(
+        workspace_id, controls.policies.workspace_read
+    ) == read_before
+
+
+def test_queue_list_api_charges_read_policy_not_mutation_policy(controlled_api) -> None:
+    client, app = controlled_api
+    controls = app.state.admission_controls
+    workspace_id = client._test_workspace_id  # type: ignore[attr-defined]
+    read_before = controls.workspace_read.remaining(
+        workspace_id, controls.policies.workspace_read
+    )
+    mutation_before = controls.workspace_mutation.remaining(
+        workspace_id, controls.policies.workspace_mutation
+    )
+
+    response = client.get("/api/v1/actions", params={"queue": "open"})
+
+    assert response.status_code == 200
+    assert controls.workspace_read.remaining(
+        workspace_id, controls.policies.workspace_read
+    ) == read_before - 1
+    assert controls.workspace_mutation.remaining(
+        workspace_id, controls.policies.workspace_mutation
+    ) == mutation_before
+
+
 def test_concurrency_rejection_charges_short_attempt_but_not_daily_quota() -> None:
     settings = Settings(application_abuse_controls_enabled=True)
     controls = create_app_admission_controls(settings)
@@ -577,7 +637,7 @@ def test_exhausted_attacker_cannot_turn_foreign_action_status_into_quota_or_conf
     assert materialized.status_code == 201
     victim_action = materialized.json()["items"][0]["id"]
     assert victim.put(f"/api/v1/actions/{victim_action}/status", json={"status": "in_progress", "expected_version": 1}).status_code == 200
-    assert victim.put(f"/api/v1/actions/{victim_action}/status", json={"status": "completed", "expected_version": 1}).status_code == 409
+    assert victim.put(f"/api/v1/actions/{victim_action}/status", json={"status": "completed", "completion_outcome": "Finished", "expected_version": 1}).status_code == 409
 
     for reference in ("attacker-1", "attacker-2", "attacker-3", "attacker-4"):
         assert attacker.post("/api/v1/clients", json={"display_name": reference, "external_reference": reference}).status_code == 201

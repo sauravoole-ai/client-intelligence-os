@@ -109,7 +109,7 @@ afterEach(() => {
 
 describe('AnalysisDetailPage Action materialization', () => {
   const approved = { ...analysis, review_status: 'approved' as const };
-  const persistedAction: ActionItem = { id: 'item-1', analysis_id: analysisId, client_id: null, source_action_id: 'action-follow-up', title: 'Contact the client', description: 'A stored rationale.', priority: 1, status: 'open', linked_finding_ids: ['finding-sleep'], due_at: null, completed_at: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
+const persistedAction: ActionItem = { id: 'item-1', analysis_id: analysisId, client_id: null, source_action_id: 'action-follow-up', title: 'Contact the client', description: 'A stored rationale.', priority: 1, status: 'open', linked_finding_ids: ['finding-sleep'], due_at: null, completed_at: null, assignee_membership_id: null, completion_outcome: null, assignee: null, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 };
 
   it('shows recommendations but gates unapproved materialization', async () => {
     mockedGetAnalysis.mockResolvedValue(analysis); renderDetail();
