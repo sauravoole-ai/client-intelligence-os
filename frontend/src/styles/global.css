@@ -204,17 +204,25 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .client-workspace__metadata { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 220px)); border-top: 1px solid var(--border); padding-top: 16px; }
 .client-analysis-meta { padding-block: 14px; border-block: 1px solid var(--border); }
 .actions-page { max-width: 1180px; width: 100%; }
+.action-queue-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.action-queue-controls .chip { min-height: 40px; }
 .action-queue { display: grid; gap: 12px; }
 .action-item-card { padding: 18px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: var(--radius-lg); display: grid; gap: 14px; }
 .action-item-card--quiet { opacity: 0.78; border-left-color: var(--border); }
+.action-item-card--overdue { border-left-color: var(--danger); }
 .action-item-card--compact { padding: 14px; }
 .action-item-card h3, .action-item-card p, .action-item-card dl, .action-materialization p { margin: 0; }
 .action-item-card__header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.action-item-card__badges { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .action-item-card__meta { display: flex; flex-wrap: wrap; gap: 14px 28px; margin: 0; }
 .action-item-card__meta dt { color: var(--ink-muted); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.08em; }
 .action-item-card__meta dd { margin: 3px 0 0; }
 .action-item-card__relations { display: flex; flex-wrap: wrap; gap: 12px; color: var(--ink-muted); font-size: 0.88rem; }
 .action-item-card .field-stack { max-width: 260px; }
+.action-item-card__controls, .action-item-card__editor, .action-item-card__status, .action-item-card__actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.action-item-card__controls { border-top: 1px solid var(--border); padding-top: 14px; }
+.action-item-card__editor, .action-item-card__status { width: 100%; }
+.action-item-card__status textarea { min-height: 74px; resize: vertical; }
 .action-selection { display: flex; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); font-weight: 650; }
 .action-selection input { width: auto; }
 .action-materialization { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }

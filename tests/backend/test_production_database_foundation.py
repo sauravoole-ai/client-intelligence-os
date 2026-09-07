@@ -20,7 +20,7 @@ from backend.app.db.preflight import (
 )
 
 
-ACCESS_CONTROL_HEAD = "0005_access_control_foundation"
+FOLLOW_UP_HEAD = "0006_human_controlled_follow_up"
 
 
 def sqlite_url(database_path: Path) -> str:
@@ -137,7 +137,7 @@ def test_explicit_migration_command_upgrades_a_fresh_database_to_head(tmp_path: 
             "action_items",
         } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == ACCESS_CONTROL_HEAD
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == FOLLOW_UP_HEAD
     finally:
         engine.dispose()
 
@@ -154,7 +154,7 @@ def test_migration_module_main_uses_the_configured_database_url(
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == ACCESS_CONTROL_HEAD
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == FOLLOW_UP_HEAD
     finally:
         engine.dispose()
 

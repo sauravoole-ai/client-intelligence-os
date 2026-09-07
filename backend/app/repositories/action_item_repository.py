@@ -1,11 +1,17 @@
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.models.action_item import ActionItemRecord
+from backend.app.repositories.workspace_membership_repository import (
+    WorkspaceMembershipRepositoryError,
+    get_membership_for_workspace,
+)
+from backend.app.schemas.action_items import ActionQueue
 from backend.app.schemas.client_intelligence import CoachAction
 
 
@@ -19,6 +25,68 @@ class ActionItemNotFoundError(LookupError):
 
 class ActionItemConflictError(RuntimeError):
     pass
+
+
+class ActionItemAssigneeInvalidError(RuntimeError):
+    pass
+
+
+class ActionItemCompletionInvalidError(RuntimeError):
+    pass
+
+
+def validate_calendar_time_zone(
+    queue: ActionQueue | None, time_zone: str | None
+) -> ZoneInfo | None:
+    if queue not in {"due_today", "upcoming"}:
+        return None
+    if not time_zone:
+        raise ValueError("A calendar queue requires an IANA time zone.")
+    try:
+        resolved = ZoneInfo(time_zone)
+    except ZoneInfoNotFoundError as error:
+        raise ValueError("The requested time zone is not valid.") from error
+    if resolved.key in {"UTC", "GMT"} or resolved.key.startswith("Etc/GMT"):
+        raise ValueError("The requested time zone is not valid.")
+    return resolved
+
+
+def _utc_instant(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("now_utc must include a timezone offset")
+    return value.astimezone(timezone.utc)
+
+
+def _calendar_day_boundaries(now_utc: datetime, viewer_zone: ZoneInfo) -> tuple[datetime, datetime]:
+    local_date = now_utc.astimezone(viewer_zone).date()
+    start = datetime.combine(local_date, time.min, tzinfo=viewer_zone)
+    next_start = datetime.combine(local_date + timedelta(days=1), time.min, tzinfo=viewer_zone)
+    return start.astimezone(timezone.utc), next_start.astimezone(timezone.utc)
+
+
+def _normalize_due_at(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _same_due_at(left: datetime | None, right: datetime | None) -> bool:
+    return _normalize_due_at(left) == _normalize_due_at(right)
+
+
+def _get_action_for_follow_up(
+    session: Session, *, action_id: str, workspace_id: str
+) -> ActionItemRecord | None:
+    return session.scalar(
+        select(ActionItemRecord)
+        .where(
+            ActionItemRecord.id == action_id,
+            ActionItemRecord.workspace_id == workspace_id,
+        )
+        .execution_options(populate_existing=True)
+    )
 
 
 def materialize_action_items(
@@ -153,7 +221,20 @@ def list_action_items(
         ) from error
 
 
-def list_actions_for_workspace(session: Session, *, workspace_id: str, status: str | None = None, client_id: str | None = None, analysis_id: str | None = None, offset: int = 0, limit: int = 20) -> list[ActionItemRecord]:
+def list_actions_for_workspace(
+    session: Session,
+    *,
+    workspace_id: str,
+    status: str | None = None,
+    client_id: str | None = None,
+    analysis_id: str | None = None,
+    assignee_membership_id: str | None = None,
+    queue: ActionQueue | None = None,
+    time_zone: str | None = None,
+    now_utc: datetime | None = None,
+    offset: int = 0,
+    limit: int = 20,
+) -> list[ActionItemRecord]:
     if offset < 0 or not 1 <= limit <= 100:
         raise ValueError("invalid pagination")
     statement = select(ActionItemRecord).where(ActionItemRecord.workspace_id == workspace_id)
@@ -163,6 +244,43 @@ def list_actions_for_workspace(session: Session, *, workspace_id: str, status: s
         statement = statement.where(ActionItemRecord.client_id == client_id)
     if analysis_id is not None:
         statement = statement.where(ActionItemRecord.analysis_id == analysis_id)
+    if assignee_membership_id is not None:
+        statement = statement.where(
+            ActionItemRecord.assignee_membership_id == assignee_membership_id
+        )
+    if queue is not None:
+        active_work = ActionItemRecord.status.in_(("open", "in_progress"))
+        current_now = _utc_instant(now_utc or datetime.now(timezone.utc))
+        if queue == "open":
+            statement = statement.where(active_work)
+        elif queue == "overdue":
+            statement = statement.where(
+                active_work,
+                ActionItemRecord.due_at.is_not(None),
+                ActionItemRecord.due_at < current_now,
+            )
+        elif queue in {"due_today", "upcoming"}:
+            viewer_zone = validate_calendar_time_zone(queue, time_zone)
+            assert viewer_zone is not None
+            start_today, start_tomorrow = _calendar_day_boundaries(
+                current_now, viewer_zone
+            )
+            if queue == "due_today":
+                statement = statement.where(
+                    active_work,
+                    ActionItemRecord.due_at >= start_today,
+                    ActionItemRecord.due_at < start_tomorrow,
+                )
+            else:
+                statement = statement.where(
+                    active_work, ActionItemRecord.due_at >= start_tomorrow
+                )
+        elif queue == "completed":
+            statement = statement.where(ActionItemRecord.status == "completed")
+        elif queue == "no_due_date":
+            statement = statement.where(active_work, ActionItemRecord.due_at.is_(None))
+        else:
+            raise ValueError("The requested queue is not valid.")
     try:
         return list(session.scalars(statement.order_by(ActionItemRecord.created_at.desc(), ActionItemRecord.id.desc()).offset(offset).limit(limit)).all())
     except SQLAlchemyError as error:
@@ -173,48 +291,151 @@ def update_action_status(
     session: Session,
     action_id: str,
     *,
+    workspace_id: str,
     status: str,
+    completion_outcome: str | None,
     expected_version: int,
     updated_at: datetime,
 ) -> ActionItemRecord:
     try:
-        record = session.get(ActionItemRecord, action_id, populate_existing=True)
+        if status == "completed" and not completion_outcome:
+            raise ActionItemCompletionInvalidError
+        if status != "completed" and completion_outcome is not None:
+            raise ActionItemCompletionInvalidError
+        record = _get_action_for_follow_up(
+            session, action_id=action_id, workspace_id=workspace_id
+        )
         if record is None:
             raise ActionItemNotFoundError
-        if record.status == status:
+        desired_outcome = completion_outcome if status == "completed" else None
+        if record.status == status and record.completion_outcome == desired_outcome:
             return record
+        completed_at = (
+            updated_at
+            if status == "completed" and record.status != "completed"
+            else record.completed_at if status == "completed" else None
+        )
 
         statement = (
             update(ActionItemRecord)
             .where(
                 ActionItemRecord.id == action_id,
+                ActionItemRecord.workspace_id == workspace_id,
                 ActionItemRecord.version == expected_version,
             )
             .values(
                 status=status,
-                completed_at=updated_at if status == "completed" else None,
+                completed_at=completed_at,
+                completion_outcome=desired_outcome,
                 updated_at=updated_at,
                 version=ActionItemRecord.version + 1,
             )
         )
         result = session.execute(statement)
         if result.rowcount != 1:
-            current = session.get(
-                ActionItemRecord, action_id, populate_existing=True
+            current = _get_action_for_follow_up(
+                session, action_id=action_id, workspace_id=workspace_id
             )
             if current is None:
                 raise ActionItemNotFoundError
-            if current.status == status:
+            if current.status == status and current.completion_outcome == desired_outcome:
                 return current
             raise ActionItemConflictError
         session.flush()
-        updated = session.get(ActionItemRecord, action_id, populate_existing=True)
+        updated = _get_action_for_follow_up(
+            session, action_id=action_id, workspace_id=workspace_id
+        )
         if updated is None:
             raise ActionItemNotFoundError
         return updated
-    except (ActionItemNotFoundError, ActionItemConflictError):
+    except (
+        ActionItemNotFoundError,
+        ActionItemConflictError,
+        ActionItemCompletionInvalidError,
+    ):
         raise
     except SQLAlchemyError as error:
         raise ActionItemPersistenceError(
             "The action item status could not be updated."
+        ) from error
+
+
+def update_action_follow_up(
+    session: Session,
+    *,
+    action_id: str,
+    workspace_id: str,
+    assignee_membership_id: str | None,
+    due_at: datetime | None,
+    expected_version: int,
+    updated_at: datetime,
+) -> ActionItemRecord:
+    try:
+        desired_due_at = _normalize_due_at(due_at)
+        record = _get_action_for_follow_up(
+            session, action_id=action_id, workspace_id=workspace_id
+        )
+        if record is None:
+            raise ActionItemNotFoundError
+
+        if (
+            assignee_membership_id is not None
+            and assignee_membership_id != record.assignee_membership_id
+        ):
+            membership = get_membership_for_workspace(
+                session,
+                membership_id=assignee_membership_id,
+                workspace_id=workspace_id,
+            )
+            if membership is None or membership.status != "active":
+                raise ActionItemAssigneeInvalidError
+
+        if (
+            assignee_membership_id == record.assignee_membership_id
+            and _same_due_at(desired_due_at, record.due_at)
+        ):
+            return record
+
+        result = session.execute(
+            update(ActionItemRecord)
+            .where(
+                ActionItemRecord.id == action_id,
+                ActionItemRecord.workspace_id == workspace_id,
+                ActionItemRecord.version == expected_version,
+            )
+            .values(
+                assignee_membership_id=assignee_membership_id,
+                due_at=desired_due_at,
+                updated_at=updated_at,
+                version=ActionItemRecord.version + 1,
+            )
+        )
+        if result.rowcount != 1:
+            current = _get_action_for_follow_up(
+                session, action_id=action_id, workspace_id=workspace_id
+            )
+            if current is None:
+                raise ActionItemNotFoundError
+            if (
+                assignee_membership_id == current.assignee_membership_id
+                and _same_due_at(desired_due_at, current.due_at)
+            ):
+                return current
+            raise ActionItemConflictError
+        session.flush()
+        updated = _get_action_for_follow_up(
+            session, action_id=action_id, workspace_id=workspace_id
+        )
+        if updated is None:
+            raise ActionItemNotFoundError
+        return updated
+    except (
+        ActionItemNotFoundError,
+        ActionItemConflictError,
+        ActionItemAssigneeInvalidError,
+    ):
+        raise
+    except (SQLAlchemyError, WorkspaceMembershipRepositoryError) as error:
+        raise ActionItemPersistenceError(
+            "The action item follow-up could not be updated."
         ) from error

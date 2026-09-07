@@ -10,13 +10,17 @@ from backend.app.api.routes.analyses import validate_stored_analysis
 from backend.app.db.session import get_db_session
 from backend.app.security.sessions import CurrentPrincipal, get_current_principal, require_csrf
 from backend.app.repositories.action_item_repository import (
+    ActionItemAssigneeInvalidError,
+    ActionItemCompletionInvalidError,
     ActionItemConflictError,
     ActionItemNotFoundError,
     ActionItemPersistenceError,
     get_action_for_workspace,
     list_actions_for_workspace,
     materialize_action_items,
+    update_action_follow_up,
     update_action_status,
+    validate_calendar_time_zone,
 )
 from backend.app.repositories.analysis_repository import (
     AnalysisPersistenceError,
@@ -29,7 +33,9 @@ from backend.app.repositories.client_repository import (
 from backend.app.schemas.action_items import (
     ActionItemListResponse,
     ActionItemResponse,
+    ActionQueue,
     ActionItemStatus,
+    ActionFollowUpUpdateRequest,
     ActionStatusUpdateRequest,
     MaterializeActionsRequest,
     MaterializeActionsResponse,
@@ -38,6 +44,19 @@ from backend.app.api.admission import admit_workspace_mutation, admit_workspace_
 
 router = APIRouter(dependencies=[Depends(get_current_principal)])
 RETRIEVAL_DETAIL = "The action items could not be retrieved."
+INVALID_TIME_ZONE_DETAIL = "The time_zone parameter is not valid for this queue."
+
+
+def _validate_list_queue_time_zone(
+    queue: ActionQueue | None, time_zone: str | None
+) -> None:
+    if queue in {"due_today", "upcoming"}:
+        try:
+            validate_calendar_time_zone(queue, time_zone)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="The requested time zone is not valid.") from error
+    elif time_zone is not None:
+        raise HTTPException(status_code=422, detail=INVALID_TIME_ZONE_DETAIL)
 
 
 def action_response(record: object) -> ActionItemResponse:
@@ -139,9 +158,13 @@ def list_actions(
     principal: CurrentPrincipal = Depends(get_current_principal),
     action_status: Annotated[ActionItemStatus | None, Query(alias="status")] = None,
     client_id: UUID | None = None,
+    assignee_membership_id: UUID | None = None,
+    queue: ActionQueue | None = None,
+    time_zone: str | None = None,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> ActionItemListResponse:
+    _validate_list_queue_time_zone(queue, time_zone)
     admit_workspace_read(request, principal.workspace_id)
     try:
         records = list_actions_for_workspace(
@@ -149,6 +172,13 @@ def list_actions(
             workspace_id=principal.workspace_id,
             status=action_status,
             client_id=str(client_id) if client_id is not None else None,
+            assignee_membership_id=(
+                str(assignee_membership_id)
+                if assignee_membership_id is not None
+                else None
+            ),
+            queue=queue,
+            time_zone=time_zone,
             offset=offset,
             limit=limit,
         )
@@ -261,7 +291,9 @@ def change_action_status(
         record = update_action_status(
             session,
             str(action_id),
+            workspace_id=principal.workspace_id,
             status=payload.status,
+            completion_outcome=payload.completion_outcome,
             expected_version=payload.expected_version,
             updated_at=datetime.now(timezone.utc),
         )
@@ -277,10 +309,68 @@ def change_action_status(
             status_code=409,
             detail="The action item was updated by another request.",
         ) from error
+    except ActionItemCompletionInvalidError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail="A completion outcome is required when completing an action item.",
+        ) from error
     except (ActionItemPersistenceError, SQLAlchemyError) as error:
         session.rollback()
         raise HTTPException(
             status_code=503,
             detail="The action item status could not be saved.",
+        ) from error
+    return action_response(record)
+
+
+@router.put(
+    "/actions/{action_id}/follow-up",
+    response_model=ActionItemResponse,
+    dependencies=[Depends(require_csrf)],
+)
+def update_action_follow_up_route(
+    action_id: UUID,
+    payload: ActionFollowUpUpdateRequest,
+    request: Request,
+    session: Session = Depends(get_db_session),
+    principal: CurrentPrincipal = Depends(require_csrf),
+) -> ActionItemResponse:
+    try:
+        if get_action_for_workspace(session, str(action_id), principal.workspace_id) is None:
+            raise ActionItemNotFoundError
+        admit_workspace_mutation(request, principal.workspace_id)
+        record = update_action_follow_up(
+            session,
+            action_id=str(action_id),
+            workspace_id=principal.workspace_id,
+            assignee_membership_id=payload.assignee_membership_id,
+            due_at=payload.due_at,
+            expected_version=payload.expected_version,
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.commit()
+    except ActionItemNotFoundError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=404, detail="The requested action item was not found."
+        ) from error
+    except ActionItemAssigneeInvalidError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail="The assignee selection is not valid for this workspace.",
+        ) from error
+    except ActionItemConflictError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="The action item was updated by another request.",
+        ) from error
+    except (ActionItemPersistenceError, SQLAlchemyError) as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="The action item follow-up could not be saved.",
         ) from error
     return action_response(record)
