@@ -5,6 +5,10 @@ import type {
   AnalysisReviewResponse,
   PersistedAnalysisResponse,
   Client,
+  LongitudinalSignal,
+  TrajectoryResponse,
+  WhatChangedResponse,
+  LongitudinalRefreshResponse,
 } from '../types';
 import {
   AnalysisReviewConflictError,
@@ -26,6 +30,12 @@ import {
   materializeAnalysisActions,
   updateActionFollowUp,
   updateActionStatus,
+  getClientTrajectory,
+  getClientWhatChanged,
+  getLongitudinalSignal,
+  refreshClientLongitudinal,
+  reviewLongitudinalSignal,
+  LongitudinalSignalConflictError,
 } from './api';
 
 type AuthApiContract = {
@@ -464,6 +474,104 @@ describe('client API', () => {
     const request = expect(getClient('id', 10)).rejects.toThrow('timed out');
     await vi.advanceTimersByTimeAsync(10);
     await request;
+  });
+});
+
+describe('longitudinal intelligence API', () => {
+  const signal: LongitudinalSignal = {
+    id: '00000000-0000-0000-0000-000000000101',
+    client_id: clientResponse.id,
+    canonical_key: 'sleep-consistency',
+    signal_kind: 'theme',
+    temporal_state: 'active',
+    trend_direction: 'stable',
+    summary: 'Sleep consistency is an active theme.',
+    explanation: 'The approved evidence supports this theme.',
+    trust_state: 'draft',
+    first_observed_at: '2026-01-01T00:00:00Z',
+    last_observed_at: '2026-01-02T00:00:00Z',
+    observation_count: 1,
+    version: 1,
+    reviewed_at: null,
+    evidence: [{
+      analysis_id: analysisResponse.analysis_id,
+      artifact_kind: 'finding',
+      artifact_id: 'finding-1',
+      evidence_role: 'supports',
+    }],
+  };
+
+  const trajectory: TrajectoryResponse = {
+    client_id: clientResponse.id,
+    trusted_signals: [],
+    review_required: [signal],
+    action_item_aggregates: { open_count: 1, completed_count: 0 },
+    deterministic_metrics: {},
+  };
+
+  const whatChanged: WhatChangedResponse = {
+    client_id: clientResponse.id,
+    comparison_analysis_id: analysisResponse.analysis_id,
+    items: [{ signal_id: null, change_kind: 'insufficient_history', summary: 'Insufficient approved history.', evidence: [] }],
+  };
+
+  const unavailableRefresh: LongitudinalRefreshResponse = {
+    processed_analysis_count: 1,
+    processed_action_item_count: 0,
+    created_draft_signal_count: 0,
+    updated_draft_signal_count: 0,
+    invalidated_trusted_signal_count: 0,
+    semantic_status: 'unavailable',
+  };
+
+  it('validates controlled longitudinal response shapes', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(signal))
+      .mockResolvedValueOnce(jsonResponse(trajectory))
+      .mockResolvedValueOnce(jsonResponse(whatChanged));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getLongitudinalSignal(signal.id)).resolves.toEqual(signal);
+    await expect(getClientTrajectory(clientResponse.id)).resolves.toEqual(trajectory);
+    await expect(getClientWhatChanged(clientResponse.id)).resolves.toEqual(whatChanged);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      `/api/v1/longitudinal-signals/${signal.id}`,
+      `/api/v1/clients/${clientResponse.id}/trajectory`,
+      `/api/v1/clients/${clientResponse.id}/what-changed`,
+    ]);
+  });
+
+  it('maps review 409 to a longitudinal conflict error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private conflict detail', { status: 409 })));
+
+    await expect(reviewLongitudinalSignal(signal.id, {
+      action: 'approve', expected_version: 1, reason: null,
+    })).rejects.toBeInstanceOf(LongitudinalSignalConflictError);
+  });
+
+  it('preserves semantic unavailability and safely maps refresh admission failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(unavailableRefresh));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(refreshClientLongitudinal(clientResponse.id)).resolves.toEqual(unavailableRefresh);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/clients/${clientResponse.id}/longitudinal-refresh`,
+      expect.objectContaining({ method: 'POST' }),
+    );
+
+    for (const status of [429, 503]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('private admission detail', { status })));
+      await expect(refreshClientLongitudinal(clientResponse.id)).rejects.toThrow(/try again|unavailable/i);
+      await expect(refreshClientLongitudinal(clientResponse.id)).rejects.not.toThrow('private admission detail');
+    }
+  });
+
+  it('rejects an unexpected longitudinal evidence shape', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      ...signal,
+      evidence: [{ analysis_id: analysisResponse.analysis_id, evidence_role: 'supports' }],
+    })));
+
+    await expect(getLongitudinalSignal(signal.id)).rejects.toThrow('invalid response');
   });
 });
 

@@ -234,3 +234,75 @@ export interface AuditEntry {
   engine: string;
   promptVersion: string;
 }
+
+export type LongitudinalSignalKind = 'theme' | 'risk' | 'commitment' | 'priority' | 'decision';
+export type LongitudinalTemporalState = 'emerging' | 'active' | 'recurring' | 'resolving' | 'resolved' | 'reopened' | 'superseded';
+export type LongitudinalTrendDirection = 'improving' | 'worsening' | 'stable' | 'mixed' | 'unknown';
+export type LongitudinalTrustState = 'draft' | 'trusted' | 'rejected' | 'needs_revalidation';
+export type LongitudinalEvidenceRole = 'supports' | 'contradicts' | 'resolves' | 'supersedes';
+export type LongitudinalArtifactKind = 'finding' | 'risk_flag' | 'recommended_action';
+export type LongitudinalActionEvidenceField = 'status' | 'completed_at' | 'completion_outcome' | 'due_at';
+
+export interface LongitudinalEvidenceReference {
+  analysis_id?: string | null;
+  action_item_id?: string | null;
+  artifact_kind?: LongitudinalArtifactKind | null;
+  artifact_id?: string | null;
+  message_id?: string | null;
+  evidence_role: LongitudinalEvidenceRole;
+  action_field?: LongitudinalActionEvidenceField | null;
+}
+
+export interface LongitudinalSignal {
+  id: string;
+  client_id: string;
+  canonical_key: string;
+  signal_kind: LongitudinalSignalKind;
+  temporal_state: LongitudinalTemporalState;
+  trend_direction: LongitudinalTrendDirection;
+  summary: string;
+  explanation: string;
+  trust_state: LongitudinalTrustState;
+  first_observed_at: string;
+  last_observed_at: string;
+  observation_count: number;
+  version: number;
+  reviewed_at: string | null;
+  evidence: LongitudinalEvidenceReference[];
+}
+
+export interface TrajectoryResponse {
+  client_id: string;
+  trusted_signals: LongitudinalSignal[];
+  review_required: LongitudinalSignal[];
+  action_item_aggregates: { open_count: number; completed_count: number };
+  deterministic_metrics: Record<string, number>;
+}
+
+export interface WhatChangedResponse {
+  client_id: string;
+  comparison_analysis_id: string | null;
+  items: Array<{
+    signal_id: string | null;
+    change_kind: 'new' | 'recurring' | 'improving' | 'worsening' | 'completed' | 'resolved' | 'insufficient_history';
+    summary: string;
+    evidence: LongitudinalEvidenceReference[];
+  }>;
+}
+
+export interface SignalReviewRequest {
+  action: 'approve' | 'edit_and_approve' | 'reject' | 'revalidate';
+  expected_version: number;
+  reason: string | null;
+  summary?: string | null;
+  explanation?: string | null;
+}
+
+export interface LongitudinalRefreshResponse {
+  processed_analysis_count: number;
+  processed_action_item_count: number;
+  created_draft_signal_count: number;
+  updated_draft_signal_count: number;
+  invalidated_trusted_signal_count: number;
+  semantic_status: 'not_needed' | 'completed' | 'unavailable' | 'invalid_output';
+}

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     analysis_short_rate_window_seconds: int = Field(default=600, ge=1)
     analysis_daily_rate_limit: int = Field(default=30, ge=1)
     analysis_daily_rate_window_seconds: int = Field(default=86_400, ge=1)
+    refresh_short_rate_limit: int = Field(default=6, ge=1)
+    refresh_short_rate_window_seconds: int = Field(default=600, ge=1)
     inference_workspace_concurrency: int = Field(default=1, ge=1)
     inference_global_concurrency: int = Field(default=2, ge=1)
     inference_capacity_retry_after_seconds: int = Field(default=5, ge=1)

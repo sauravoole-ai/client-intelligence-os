@@ -24,6 +24,12 @@ import type {
   WorkspaceMember,
   WorkspaceMemberListResponse,
   AuthenticatedSession,
+  LongitudinalEvidenceReference,
+  LongitudinalRefreshResponse,
+  LongitudinalSignal,
+  SignalReviewRequest,
+  TrajectoryResponse,
+  WhatChangedResponse,
 } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -684,4 +690,132 @@ export async function listAnalyses(
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function isLongitudinalEvidenceReference(value: unknown): value is LongitudinalEvidenceReference {
+  if (!isRecord(value) || !['supports', 'contradicts', 'resolves', 'supersedes'].includes(String(value.evidence_role))) return false;
+  const analysisId = value.analysis_id;
+  const actionItemId = value.action_item_id;
+  if ((typeof analysisId === 'string') === (typeof actionItemId === 'string')) return false;
+  if (typeof analysisId === 'string') {
+    return ['finding', 'risk_flag', 'recommended_action'].includes(String(value.artifact_kind))
+      && typeof value.artifact_id === 'string'
+      && (value.action_field === undefined || value.action_field === null);
+  }
+  return ['status', 'completed_at', 'completion_outcome', 'due_at'].includes(String(value.action_field))
+    && (value.artifact_kind === undefined || value.artifact_kind === null)
+    && (value.artifact_id === undefined || value.artifact_id === null)
+    && (value.message_id === undefined || value.message_id === null);
+}
+
+function isLongitudinalSignal(value: unknown): value is LongitudinalSignal {
+  return isRecord(value)
+    && typeof value.id === 'string' && typeof value.client_id === 'string' && typeof value.canonical_key === 'string'
+    && ['theme', 'risk', 'commitment', 'priority', 'decision'].includes(String(value.signal_kind))
+    && ['emerging', 'active', 'recurring', 'resolving', 'resolved', 'reopened', 'superseded'].includes(String(value.temporal_state))
+    && ['improving', 'worsening', 'stable', 'mixed', 'unknown'].includes(String(value.trend_direction))
+    && typeof value.summary === 'string' && typeof value.explanation === 'string'
+    && ['draft', 'trusted', 'rejected', 'needs_revalidation'].includes(String(value.trust_state))
+    && typeof value.first_observed_at === 'string' && typeof value.last_observed_at === 'string'
+    && Number.isInteger(value.observation_count) && typeof value.observation_count === 'number' && value.observation_count >= 1
+    && Number.isInteger(value.version) && typeof value.version === 'number' && value.version >= 1
+    && isNullableString(value.reviewed_at) && Array.isArray(value.evidence)
+    && value.evidence.every(isLongitudinalEvidenceReference);
+}
+
+function isTrajectoryResponse(value: unknown): value is TrajectoryResponse {
+  const aggregates = isRecord(value) && isRecord(value.action_item_aggregates)
+    ? value.action_item_aggregates
+    : null;
+  const metrics = isRecord(value) && isRecord(value.deterministic_metrics)
+    ? value.deterministic_metrics
+    : null;
+  return isRecord(value) && typeof value.client_id === 'string'
+    && Array.isArray(value.trusted_signals) && value.trusted_signals.every(isLongitudinalSignal)
+    && Array.isArray(value.review_required) && value.review_required.every(isLongitudinalSignal)
+    && aggregates !== null
+    && Number.isInteger(aggregates.open_count) && typeof aggregates.open_count === 'number' && aggregates.open_count >= 0
+    && Number.isInteger(aggregates.completed_count) && typeof aggregates.completed_count === 'number' && aggregates.completed_count >= 0
+    && metrics !== null
+    && Object.values(metrics).every((item) => typeof item === 'number' && Number.isInteger(item) && item >= 0);
+}
+
+function isWhatChangedResponse(value: unknown): value is WhatChangedResponse {
+  return isRecord(value) && typeof value.client_id === 'string' && isNullableString(value.comparison_analysis_id)
+    && Array.isArray(value.items) && value.items.every((item) => isRecord(item)
+      && isNullableString(item.signal_id)
+      && ['new', 'recurring', 'improving', 'worsening', 'completed', 'resolved', 'insufficient_history'].includes(String(item.change_kind))
+      && typeof item.summary === 'string' && Array.isArray(item.evidence)
+      && item.evidence.every(isLongitudinalEvidenceReference));
+}
+
+function isLongitudinalRefreshResponse(value: unknown): value is LongitudinalRefreshResponse {
+  return isRecord(value)
+    && ['processed_analysis_count', 'processed_action_item_count', 'created_draft_signal_count', 'updated_draft_signal_count', 'invalidated_trusted_signal_count'].every((key) => Number.isInteger(value[key]) && Number(value[key]) >= 0)
+    && ['not_needed', 'completed', 'unavailable', 'invalid_output'].includes(String(value.semantic_status));
+}
+
+class LongitudinalApiError extends Error {}
+
+export class LongitudinalSignalConflictError extends Error {
+  constructor() {
+    super('This longitudinal signal was changed elsewhere. Reload it before reviewing again.');
+    this.name = 'LongitudinalSignalConflictError';
+  }
+}
+
+async function longitudinalRequest<T>(
+  path: string,
+  validator: (value: unknown) => value is T,
+  init: NonNullable<Parameters<typeof fetch>[1]> = {},
+  timeoutMs = 15_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await apiFetch(`${API_BASE_URL}${path}`, { ...init, signal: controller.signal });
+    if (!response.ok) {
+      if (response.status === 409) throw new LongitudinalSignalConflictError();
+      if (response.status === 404) throw new LongitudinalApiError('The requested longitudinal record was not found.');
+      if (response.status === 422) throw new LongitudinalApiError('The longitudinal request could not be validated.');
+      if (response.status === 429) throw new LongitudinalApiError('Too many longitudinal requests. Please try again shortly.');
+      if (response.status === 503) throw new LongitudinalApiError('The longitudinal intelligence service is currently unavailable.');
+      throw new LongitudinalApiError('The server returned an unexpected error.');
+    }
+    const data: unknown = await response.json();
+    if (!validator(data)) throw new LongitudinalApiError('The longitudinal intelligence service returned an invalid response.');
+    return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('The longitudinal request timed out. Please retry.');
+    if (error instanceof SyntaxError) throw new Error('The longitudinal intelligence service returned an invalid response.');
+    if (error instanceof LongitudinalApiError || error instanceof LongitudinalSignalConflictError) throw error;
+    throw new Error('Unable to reach the longitudinal intelligence service.');
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+export function getLongitudinalSignal(signalId: string, timeoutMs = 15_000) {
+  return longitudinalRequest(`/longitudinal-signals/${encodeURIComponent(signalId)}`, isLongitudinalSignal, {}, timeoutMs);
+}
+
+export function getClientTrajectory(clientId: string, timeoutMs = 15_000) {
+  return longitudinalRequest(`/clients/${encodeURIComponent(clientId)}/trajectory`, isTrajectoryResponse, {}, timeoutMs);
+}
+
+export function getClientWhatChanged(clientId: string, timeoutMs = 15_000) {
+  return longitudinalRequest(`/clients/${encodeURIComponent(clientId)}/what-changed`, isWhatChangedResponse, {}, timeoutMs);
+}
+
+export function refreshClientLongitudinal(clientId: string, timeoutMs = 15_000) {
+  return longitudinalRequest(`/clients/${encodeURIComponent(clientId)}/longitudinal-refresh`, isLongitudinalRefreshResponse, { method: 'POST' }, timeoutMs);
+}
+
+export function reviewLongitudinalSignal(signalId: string, request: SignalReviewRequest, timeoutMs = 15_000) {
+  return longitudinalRequest(
+    `/longitudinal-signals/${encodeURIComponent(signalId)}/review`,
+    isLongitudinalSignal,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request) },
+    timeoutMs,
+  );
 }

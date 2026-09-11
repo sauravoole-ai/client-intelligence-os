@@ -163,6 +163,25 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .analysis-review__feedback p { margin: 0 0 10px; }
 .analysis-review__feedback--success { background: rgba(88,114,96,0.12); color: #3f5945; }
 .analysis-review__feedback--error { background: rgba(153,61,61,0.1); color: #7d3434; }
+.intelligence-review { padding: clamp(20px, 3vw, 28px); display: grid; gap: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.intelligence-review--revalidation { border-left: 4px solid var(--warning); background: rgba(194,123,44,0.06); }
+.intelligence-review__header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.intelligence-review__header h2, .intelligence-review h3, .intelligence-review p { margin: 0; }
+.intelligence-review__evidence { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.intelligence-review__evidence li { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.intelligence-review__editor { display: grid; gap: 12px; }
+.intelligence-review__editor textarea { min-height: 94px; resize: vertical; }
+.intelligence-review__actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.longitudinal-workspace { display: grid; gap: 16px; }
+.longitudinal-workspace__header { display: flex; justify-content: space-between; align-items: end; gap: 16px; }
+.longitudinal-workspace__header h2, .what-changed h2, .what-changed h3, .trajectory-panel h3, .review-required h3 { margin: 4px 0 0; }
+.what-changed { display: grid; gap: 12px; }
+.what-changed__cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.what-changed__card, .trajectory-panel { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); }
+.what-changed__card h3, .what-changed__card ul { margin: 0; }
+.what-changed__card ul { padding-left: 18px; color: var(--ink-muted); font-size: 0.9rem; }
+.trajectory-panel, .review-required { display: grid; gap: 12px; }
+.trajectory-panel__signal { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-radius: var(--radius-md); background: rgba(88,114,96,0.08); }
 .analysis-detail__section { display: grid; gap: 12px; }
 .analysis-detail__section-heading h2 { margin: 0; font-size: clamp(1.2rem, 2vw, 1.55rem); }
 .analysis-detail__section-heading p { margin: 4px 0 0; color: var(--ink-muted); }

@@ -16,6 +16,7 @@ from backend.app.schemas.client_intelligence import (
     RiskFlag,
 )
 from backend.app.schemas.llm_analysis import LLMAnalysisDraft
+from backend.app.schemas.longitudinal_intelligence import LLMLongitudinalProposalBatch
 from backend.app.services.evidence_verifier import (
     EvidenceValidationError,
     materialize_evidence,
@@ -81,6 +82,11 @@ def _normalize_groq_schema_node(value: object) -> object:
 def groq_transport_schema() -> dict[str, object]:
     """Return the constrained JSON Schema sent to Groq structured outputs."""
     return _normalize_groq_schema_node(LLMAnalysisDraft.model_json_schema())
+
+
+def longitudinal_groq_transport_schema() -> dict[str, object]:
+    """Constrained schema for longitudinal proposals; separate from analysis."""
+    return _normalize_groq_schema_node(LLMLongitudinalProposalBatch.model_json_schema())
 
 
 def _build_canonical_messages(parsed_messages: list[dict[str, str]]) -> str:

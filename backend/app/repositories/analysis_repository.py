@@ -187,6 +187,17 @@ def update_analysis_review(
         )
         if updated_record is None:
             raise AnalysisNotFoundError
+        if updated_record.client_id is not None:
+            from backend.app.services.longitudinal_evidence_service import (
+                invalidate_trusted_signals_for_analysis,
+            )
+            invalidate_trusted_signals_for_analysis(
+                session,
+                workspace_id=updated_record.workspace_id or "",
+                client_id=updated_record.client_id,
+                analysis_id=updated_record.id,
+                invalidated_at=reviewed_at,
+            )
         return updated_record
     except (AnalysisNotFoundError, AnalysisReviewConflictError):
         raise

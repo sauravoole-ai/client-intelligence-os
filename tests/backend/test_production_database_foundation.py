@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect, text
@@ -20,7 +21,16 @@ from backend.app.db.preflight import (
 )
 
 
-FOLLOW_UP_HEAD = "0006_human_controlled_follow_up"
+LONGITUDINAL_HEAD = "0007_longitudinal_client_intelligence"
+EXPECTED_REVISIONS = (
+    "0001_analysis_baseline",
+    "0002_analysis_review_fields",
+    "0003_client_foundation",
+    "0004_action_items",
+    "0005_access_control_foundation",
+    "0006_human_controlled_follow_up",
+    LONGITUDINAL_HEAD,
+)
 
 
 def sqlite_url(database_path: Path) -> str:
@@ -31,6 +41,19 @@ def alembic_config(database_url: str) -> Config:
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", database_url)
     return config
+
+
+def test_repository_migration_lineage_has_one_expected_head() -> None:
+    config = Config("alembic.ini")
+    script_directory = ScriptDirectory.from_config(config)
+
+    assert tuple(script_directory.get_heads()) == (LONGITUDINAL_HEAD,)
+    assert tuple(
+        revision.revision
+        for revision in reversed(
+            list(script_directory.walk_revisions(base="base", head=LONGITUDINAL_HEAD))
+        )
+    ) == EXPECTED_REVISIONS
 
 
 def revision_preflight_engine(
@@ -137,7 +160,7 @@ def test_explicit_migration_command_upgrades_a_fresh_database_to_head(tmp_path: 
             "action_items",
         } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == FOLLOW_UP_HEAD
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == LONGITUDINAL_HEAD
     finally:
         engine.dispose()
 
@@ -154,7 +177,7 @@ def test_migration_module_main_uses_the_configured_database_url(
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == FOLLOW_UP_HEAD
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == LONGITUDINAL_HEAD
     finally:
         engine.dispose()
 
