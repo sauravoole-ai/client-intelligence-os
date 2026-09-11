@@ -179,6 +179,7 @@ class AdmissionPolicies:
     workspace_mutation: RatePolicy
     analysis_short: RatePolicy
     analysis_daily: RatePolicy
+    refresh_short: RatePolicy
 
 
 @dataclass
@@ -192,6 +193,7 @@ class AppAdmissionControls:
     workspace_mutation: FixedWindowLimiter
     analysis_short: FixedWindowLimiter
     analysis_daily: FixedWindowLimiter
+    refresh_short: FixedWindowLimiter
     inference: InferenceAdmissionController
     policies: AdmissionPolicies
 
@@ -205,6 +207,7 @@ def create_app_admission_controls(settings: object) -> AppAdmissionControls:
         workspace_mutation=RatePolicy(getattr(settings, "workspace_mutation_rate_limit"), getattr(settings, "workspace_mutation_rate_window_seconds")),
         analysis_short=RatePolicy(getattr(settings, "analysis_short_rate_limit"), getattr(settings, "analysis_short_rate_window_seconds")),
         analysis_daily=RatePolicy(getattr(settings, "analysis_daily_rate_limit"), getattr(settings, "analysis_daily_rate_window_seconds")),
+        refresh_short=RatePolicy(getattr(settings, "refresh_short_rate_limit", 6), getattr(settings, "refresh_short_rate_window_seconds", 600)),
     )
     return AppAdmissionControls(
         enabled=getattr(settings, "application_abuse_controls_enabled"),
@@ -214,6 +217,7 @@ def create_app_admission_controls(settings: object) -> AppAdmissionControls:
         workspace_mutation=FixedWindowLimiter(max_keys=max_keys),
         analysis_short=FixedWindowLimiter(max_keys=max_keys),
         analysis_daily=FixedWindowLimiter(max_keys=max_keys),
+        refresh_short=FixedWindowLimiter(max_keys=max_keys),
         inference=InferenceAdmissionController(
             workspace_limit=getattr(settings, "inference_workspace_concurrency"),
             global_limit=getattr(settings, "inference_global_concurrency"),

@@ -17,6 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from backend.app.api.routes import analyses as analyses_route
 from backend.app.api.routes import auth as auth_route
 from backend.app.api.routes import workspace as workspace_route
+from backend.app.api.routes import longitudinal as longitudinal_route
 from backend.app.core.config import Settings, settings
 from backend.app.db.base import Base
 from backend.app.db.session import get_db_session
@@ -25,6 +26,7 @@ from backend.app.models.action_item import ActionItemRecord
 from backend.app.models.analysis import AnalysisRecord
 from backend.app.models.app_session import AppSessionRecord
 from backend.app.models.client import ClientRecord
+from backend.app.models.longitudinal_signal import LongitudinalSignalRecord
 from backend.app.models.user import UserRecord
 from backend.app.models.workspace import WorkspaceMembershipRecord, WorkspaceRecord
 from backend.app.repositories.workspace_membership_repository import (
@@ -983,3 +985,65 @@ def test_workspace_scoping_prevents_cross_workspace_access_and_records_ownership
     assert [item["id"] for item in client_b.get(f"/api/v1/analyses/{linked_b_id}/actions").json()["items"]] == [action_b["id"]]
     assert client_b.get(f"/api/v1/clients/{client_a_id}/actions").status_code == 404
     assert client_b.get(f"/api/v1/analyses/{analysis_a_id}/actions").status_code == 404
+
+
+def test_inactive_membership_cannot_read_or_refresh_longitudinal_intelligence(
+    authenticated_client: tuple[TestClient, sessionmaker[Session], str, str, str],
+) -> None:
+    client, factory, _user_id, workspace_id, _raw_token = authenticated_client
+    created = client.post("/api/v1/clients", json={"display_name": "Protected Client"})
+    assert created.status_code == 201
+    client_id = created.json()["id"]
+    with factory() as session:
+        membership = session.scalar(select(WorkspaceMembershipRecord).where(
+            WorkspaceMembershipRecord.workspace_id == workspace_id,
+        ))
+        assert membership is not None
+        membership.status = "disabled"
+        session.commit()
+
+    assert client.get(f"/api/v1/clients/{client_id}/trajectory").status_code == 403
+    assert client.post(f"/api/v1/clients/{client_id}/longitudinal-refresh").status_code == 403
+
+
+def test_longitudinal_foreign_signal_and_refresh_are_non_disclosing(
+    workspace_clients: tuple[TestClient, TestClient, sessionmaker[Session], str, str, str, str],
+) -> None:
+    client_a, client_b, factory, _user_a, workspace_a_id, _user_b, _workspace_b_id = workspace_clients
+    client_a_response = client_a.post("/api/v1/clients", json={"display_name": "Workspace A Client"})
+    assert client_a_response.status_code == 201
+    client_a_id = client_a_response.json()["id"]
+    now = datetime.now(timezone.utc)
+    with factory() as session:
+        signal = LongitudinalSignalRecord(
+            id=str(uuid4()), workspace_id=workspace_a_id, client_id=client_a_id,
+            canonical_key="protected-signal", signal_kind="theme", temporal_state="active",
+            trend_direction="stable", summary="Protected summary", explanation="Protected explanation",
+            trust_state="draft", first_observed_at=now, last_observed_at=now,
+            observation_count=1, version=1, created_at=now, updated_at=now,
+        )
+        session.add(signal)
+        session.commit()
+        signal_id = signal.id
+
+    assert client_b.get(f"/api/v1/longitudinal-signals/{signal_id}").status_code == 404
+    assert client_b.get(f"/api/v1/clients/{client_a_id}/trajectory").status_code == 404
+    assert client_b.post(f"/api/v1/clients/{client_a_id}/longitudinal-refresh").status_code == 404
+
+
+def test_foreign_longitudinal_refresh_resolves_bola_before_admission(
+    workspace_clients: tuple[TestClient, TestClient, sessionmaker[Session], str, str, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_a, client_b, _factory, _user_a, _workspace_a_id, _user_b, _workspace_b_id = workspace_clients
+    client_a_response = client_a.post("/api/v1/clients", json={"display_name": "Admission-protected Client"})
+    assert client_a_response.status_code == 201
+
+    def admission_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("foreign client resolution must precede refresh admission")
+
+    monkeypatch.setattr(longitudinal_route, "admit_longitudinal_refresh", admission_must_not_run)
+    response = client_b.post(
+        f"/api/v1/clients/{client_a_response.json()['id']}/longitudinal-refresh"
+    )
+    assert response.status_code == 404

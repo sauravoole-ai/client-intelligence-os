@@ -347,6 +347,17 @@ def update_action_status(
         )
         if updated is None:
             raise ActionItemNotFoundError
+        if updated.client_id is not None:
+            from backend.app.services.longitudinal_evidence_service import (
+                invalidate_trusted_signals_for_action_item,
+            )
+            invalidate_trusted_signals_for_action_item(
+                session,
+                workspace_id=updated.workspace_id or "",
+                client_id=updated.client_id,
+                action_item_id=updated.id,
+                invalidated_at=updated_at,
+            )
         return updated
     except (
         ActionItemNotFoundError,
@@ -428,6 +439,17 @@ def update_action_follow_up(
         )
         if updated is None:
             raise ActionItemNotFoundError
+        if updated.client_id is not None:
+            from backend.app.services.longitudinal_evidence_service import (
+                invalidate_trusted_signals_for_action_item,
+            )
+            invalidate_trusted_signals_for_action_item(
+                session,
+                workspace_id=updated.workspace_id or "",
+                client_id=updated.client_id,
+                action_item_id=updated.id,
+                invalidated_at=updated_at,
+            )
         return updated
     except (
         ActionItemNotFoundError,

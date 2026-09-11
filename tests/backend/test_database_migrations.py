@@ -7,6 +7,8 @@ from alembic.script import ScriptDirectory
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.schema import CreateTable
+from sqlalchemy.dialects import postgresql
 
 import backend.app.models  # noqa: F401
 from backend.app.db.base import Base
@@ -16,6 +18,7 @@ BASELINE_REVISION = "0001_analysis_baseline"
 REVIEW_REVISION = "0002_analysis_review_fields"
 CLIENT_REVISION = "0003_client_foundation"
 ACTION_REVISION = "0004_action_items"
+LONGITUDINAL_REVISION = "0007_longitudinal_client_intelligence"
 REVIEW_COLUMNS = {
     "review_status",
     "review_note",
@@ -117,6 +120,107 @@ def test_fresh_database_upgrades_to_review_head(tmp_path: Path) -> None:
         "ix_analyses_workspace_id",
     }
     assert current_revision == repository_migration_head(database_path)
+
+
+def test_upgrade_0007_creates_three_longitudinal_tables_with_portable_constraints(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "longitudinal-upgrade.sqlite"
+
+    migrate(database_path, LONGITUDINAL_REVISION)
+
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    expected_tables = {
+        "longitudinal_signals",
+        "longitudinal_signal_evidence",
+        "longitudinal_signal_revisions",
+    }
+    assert expected_tables <= tables
+    assert repository_migration_head(database_path) == LONGITUDINAL_REVISION
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == LONGITUDINAL_REVISION
+        evidence_indexes = {
+            row[0]: row[1]
+            for row in connection.execute(
+                text(
+                    "SELECT name, sql FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = 'longitudinal_signal_evidence'"
+                )
+            )
+        }
+    engine.dispose()
+
+    signal_constraints = {
+        constraint["name"] for constraint in inspector.get_check_constraints("longitudinal_signals")
+    }
+    evidence_constraints = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("longitudinal_signal_evidence")
+    }
+    signal_foreign_keys = inspector.get_foreign_keys("longitudinal_signals")
+    evidence_foreign_keys = inspector.get_foreign_keys("longitudinal_signal_evidence")
+    revision_foreign_keys = inspector.get_foreign_keys("longitudinal_signal_revisions")
+
+    assert {
+        "ck_longitudinal_signals_signal_kind",
+        "ck_longitudinal_signals_temporal_state",
+        "ck_longitudinal_signals_trend_direction",
+        "ck_longitudinal_signals_trust_state",
+    } <= signal_constraints
+    assert {
+        "ck_longitudinal_evidence_role",
+        "ck_longitudinal_evidence_exactly_one_source",
+    } <= evidence_constraints
+    assert any(
+        key["constrained_columns"] == ["workspace_id"]
+        and key["referred_table"] == "workspaces"
+        and key["options"] == {"ondelete": "RESTRICT"}
+        for key in signal_foreign_keys
+    )
+    assert any(
+        key["constrained_columns"] == ["signal_id"]
+        and key["referred_table"] == "longitudinal_signals"
+        and key["options"] == {"ondelete": "RESTRICT"}
+        for key in evidence_foreign_keys
+    )
+    assert any(
+        key["constrained_columns"] == ["signal_id"]
+        and key["referred_table"] == "longitudinal_signals"
+        and key["options"] == {"ondelete": "RESTRICT"}
+        for key in revision_foreign_keys
+    )
+    assert {
+        "uq_longitudinal_evidence_analysis_locator_role",
+        "uq_longitudinal_evidence_action_role",
+    } <= set(evidence_indexes)
+    assert "WHERE ANALYSIS_ID IS NOT NULL" in evidence_indexes[
+        "uq_longitudinal_evidence_analysis_locator_role"
+    ].upper()
+    assert "WHERE ACTION_ITEM_ID IS NOT NULL" in evidence_indexes[
+        "uq_longitudinal_evidence_action_role"
+    ].upper()
+    assert {
+        "workspace_id",
+        "client_id",
+        "signal_kind",
+        "canonical_key",
+    } == set(
+        next(
+            constraint["column_names"]
+            for constraint in inspector.get_unique_constraints("longitudinal_signals")
+            if constraint["name"] == "uq_longitudinal_signals_identity"
+        )
+    )
+
+    for table_name in expected_tables:
+        rendered = str(
+            CreateTable(Base.metadata.tables[table_name]).compile(
+                dialect=postgresql.dialect()
+            )
+        )
+        assert "CREATE TABLE" in rendered
 
 
 def test_migrated_columns_match_current_orm_model(tmp_path: Path) -> None:

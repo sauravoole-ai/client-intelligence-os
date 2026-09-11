@@ -27,6 +27,23 @@ def admit_workspace_mutation(request: Request, workspace_id: str) -> None:
 
 
 @contextmanager
+def admit_longitudinal_refresh(request: Request, workspace_id: str) -> Iterator[None]:
+    """Dedicated refresh budget; it never consumes analysis policies."""
+    controls = _controls(request)
+    lease: InferenceLease | None = None
+    if controls is not None and controls.enabled:
+        _consume(controls.refresh_short, workspace_id, controls.policies.refresh_short)
+        lease = controls.inference.acquire(workspace_id)
+        if lease is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Refresh capacity is temporarily unavailable.", headers={"Retry-After": str(request.app.state.settings.inference_capacity_retry_after_seconds)})
+    try:
+        yield
+    finally:
+        if lease is not None:
+            lease.release()
+
+
+@contextmanager
 def admit_analysis(request: Request, workspace_id: str) -> Iterator[None]:
     controls = _controls(request)
     lease: InferenceLease | None = None
