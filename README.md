@@ -1,152 +1,395 @@
 # Client Intelligence OS
 
-Client Intelligence OS analyzes client–coach conversations into evidence-backed, structured findings, risks, recommended actions, and missing information. Its outputs are designed for human review before they are approved or used in operational workflows.
+**Evidence-grounded client intelligence for human-controlled, high-context client workflows.**
 
-## Current capabilities
+> **Status:** Active development · Longitudinal intelligence merged on `main` · Public production deployment intentionally deferred while cross-stack hardening continues
 
-- FastAPI backend with a deterministic analysis baseline
-- Provider-isolated Groq LLM architecture with deterministic fallback
-- Evidence verification and exact source references
-- React and TypeScript frontend
-- Responsive intelligence and review workspace
-- Typed integration with the analysis API
+Client Intelligence OS is a full-stack Applied AI system that turns repeated client conversations into **structured, source-linked intelligence, accountable follow-up, and longitudinal change**.
 
-## Current status
+The core engineering principle is:
 
-The project is under active development and is not production-ready. Screens without supporting backend endpoints currently use isolated mock data so that demonstration content remains separate from the analysis API.
+> **AI can propose and interpret. Application state, evidence, permissions, versions, and consequential approvals remain authoritative outside the model.**
 
-## Local setup
+That makes ClientOS less like a transcript summarizer and more like an operating layer for relationship intelligence.
+
+---
+
+## The problem
+
+High-context client work creates a continuity problem.
+
+Across repeated conversations, important information becomes fragmented across notes and memory:
+
+- recurring challenges;
+- changing priorities;
+- risks and unresolved concerns;
+- decisions and commitments;
+- follow-up ownership;
+- completed versus missed actions;
+- evidence supporting each conclusion.
+
+A conventional LLM summary can describe one conversation.
+
+ClientOS is being built to answer the harder operational question:
+
+**What changed across the relationship, what evidence supports it, and what should a human review or act on next?**
+
+---
+
+## Product loop
+
+```mermaid
+flowchart LR
+    A[Client conversation] --> B[Structured analysis]
+    B --> C[Evidence-linked findings, risks and actions]
+    C --> D[Human review]
+    D --> E[Approved operational follow-up]
+    C --> F[Longitudinal signals]
+    F --> G[Evidence and source-version validation]
+    G --> H[Human-governed trust]
+    H --> I[Client trajectory and What Changed]
+    E --> I
+```
+
+In text:
+
+**Conversation → Evidence → Structured Intelligence → Human Review → Operational Action → Follow-up → Longitudinal Change**
+
+---
+
+## What is implemented on `main`
+
+| Area | Current capability |
+| --- | --- |
+| **Conversation intelligence** | Structured findings, risk flags, recommended actions, missing information, and exact source references |
+| **Human review** | Explicit analysis-review states before downstream operational use |
+| **Follow-up workflow** | Action Items with assignees, due dates, completion outcomes, queues, and stale-write protection |
+| **Longitudinal intelligence** | Persisted signals, evidence and revisions; draft/trusted/rejected/revalidation states; refresh, trajectory, What Changed, and review surfaces |
+| **Multi-tenant backend** | Authenticated workspace boundaries, workspace-scoped persistence, CSRF-protected mutations, non-disclosing object access patterns |
+| **AI boundary** | Structured provider output, deterministic processing paths, provider isolation, bounded inference/admission controls |
+| **Frontend** | React + TypeScript review/workspace experience with typed API integration and conflict handling |
+| **Production boundary** | Database preflight, request/security controls, deployment assumptions and explicit scale constraints |
+
+The longitudinal slice is merged into the default branch and is still being hardened before public deployment.
+
+---
+
+## Why this is more than an LLM wrapper
+
+### 1. Evidence is a first-class object
+
+Model output is not accepted as an unsupported conclusion.
+
+Analysis artifacts carry source references, and longitudinal intelligence is built around persisted evidence relationships rather than an opaque rolling summary.
+
+For longitudinal signals, the system stores concepts such as:
+
+- canonical signal identity;
+- signal kind;
+- temporal state;
+- trend direction;
+- trust state;
+- first/last observation;
+- source evidence;
+- source versions;
+- revision history.
+
+### 2. Deterministic facts and semantic inference are separated
+
+The application does not ask an LLM to calculate everything.
+
+Deterministic application logic owns factual behavior such as:
+
+- Action Item lifecycle facts;
+- completion/open state;
+- chronology;
+- counts;
+- persisted versions;
+- authorization;
+- source eligibility.
+
+Semantic inference is reserved for bounded interpretation where meaning—not database truth—is required.
+
+### 3. AI does not grant itself authority
+
+Provider output cannot decide that its own proposal is trusted.
+
+Longitudinal intelligence uses explicit human-governed states:
+
+```text
+draft
+trusted
+rejected
+needs_revalidation
+```
+
+The data model also supports moving previously trusted intelligence back to **needs revalidation** when material evidence changes, rather than silently allowing an AI-generated profile to drift away from its sources.
+
+### 4. Operational work stays human-controlled
+
+Approved recommendations can enter the Action Item workflow, but the AI does not autonomously:
+
+- assign people;
+- schedule due dates;
+- mark work complete;
+- invent completion outcomes;
+- retry stale human mutations;
+- execute external actions.
+
+### 5. Multi-tenant and concurrency concerns are part of the product
+
+ClientOS treats backend correctness as product behavior.
+
+The codebase includes patterns for:
+
+- workspace-scoped repository access;
+- client/source scoping;
+- BOLA-resistant object lookup;
+- CSRF protection;
+- non-disclosing foreign-resource behavior;
+- optimistic concurrency;
+- explicit stale-write conflicts;
+- isolated admission/rate-policy capacity;
+- sanitized provider/database failure surfaces.
+
+---
+
+## Longitudinal intelligence
+
+The longitudinal layer is designed to make repeated conversations useful as a **relationship history**, not just a pile of summaries.
+
+It can represent controlled temporal states such as:
+
+- emerging;
+- active;
+- recurring;
+- resolving;
+- resolved;
+- reopened;
+- superseded.
+
+Trend direction is modeled separately from temporal state so the system can distinguish, for example, a recurring theme from whether that theme is improving or worsening.
+
+The resulting product surface is intended to answer questions such as:
+
+- **What is new?**
+- **What is recurring?**
+- **What appears to be improving?**
+- **What is worsening?**
+- **What has resolved?**
+- **What has reopened or been superseded?**
+- **Which commitments remain open?**
+- **Which commitments were completed?**
+
+These projections remain evidence-linked and separate review-required intelligence from trusted trajectory.
+
+---
+
+## Human-controlled follow-up
+
+Approved recommendations can be materialized into Action Items while preserving client/source context.
+
+The workflow supports:
+
+- workspace-scoped assignees;
+- due-date updates and clearing;
+- open / due-today / overdue / upcoming / completed / no-due queues;
+- human-authored completion outcomes;
+- historical disabled-assignee retention rules;
+- optimistic version checks;
+- stale-write conflict responses;
+- explicit lifecycle changes instead of hidden automation.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    UI[React + TypeScript workspace] --> API[FastAPI API layer]
+
+    API --> AUTH[Session auth / CSRF / admission]
+    API --> SERVICES[Domain and intelligence services]
+
+    SERVICES --> REPOS[Workspace-scoped repositories]
+    REPOS --> DB[(PostgreSQL / SQLAlchemy / Alembic)]
+
+    SERVICES --> DET[Deterministic processing]
+    SERVICES --> AI[Structured semantic inference]
+
+    AI --> VALIDATE[Server-side validation]
+    VALIDATE --> REPOS
+```
+
+The model/provider layer is deliberately outside the authority boundary for authentication, tenant ownership, database identifiers, trust state, versions, lifecycle state, and operational counts.
+
+---
+
+## Reliability and verification
+
+The repository uses behavioral and adversarial tests rather than treating a successful model response as sufficient proof.
+
+Coverage includes areas such as:
+
+- migration and persistence invariants;
+- workspace/tenant isolation;
+- CSRF and authenticated mutation paths;
+- BOLA/non-disclosure behavior;
+- analysis review state;
+- Action Item lifecycle and queues;
+- optimistic concurrency and stale writes;
+- rate/admission isolation;
+- longitudinal signal/evidence persistence;
+- source-version handling;
+- refresh/idempotence behavior;
+- malformed provider output;
+- frontend API validation and conflict behavior.
+
+The project is still under active integration, so the repository does **not** claim production certification merely because focused tests pass.
+
+---
+
+## Tech stack
+
+**Backend**
+
+Python · FastAPI · Pydantic · SQLAlchemy · Alembic · PostgreSQL · pytest
+
+**AI / inference**
+
+Groq-hosted model path · structured outputs · bounded semantic inference · deterministic processing/fallback paths · server-side provider validation
+
+**Frontend**
+
+React · TypeScript · Vite · typed API client · component/route testing
+
+**Engineering themes**
+
+REST APIs · multi-tenant authorization · human-in-the-loop AI · evidence provenance · optimistic concurrency · database migrations · security regression testing · deterministic fallbacks
+
+---
+
+## Repository map
+
+```text
+backend/
+  app/
+    api/              FastAPI routes and admission boundaries
+    models/           SQLAlchemy persistence records
+    repositories/     workspace-scoped data access
+    schemas/          API and provider contracts
+    security/         sessions, CSRF and admission controls
+    services/         analysis and longitudinal intelligence
+  migrations/         Alembic migrations
+
+frontend/
+  src/
+    components/
+    routes/
+    services/
+    types/
+
+tests/
+  backend/             persistence, API, security and AI-system tests
+
+docs/
+  superpowers/
+    specs/             reviewed design specifications
+    plans/             implementation plans
+```
+
+---
+
+## Engineering documentation
+
+The architectural reasoning is intentionally kept in the repository rather than only in chat/history.
+
+- [Longitudinal Client Intelligence design](docs/superpowers/specs/2026-09-07-longitudinal-client-intelligence-design.md)
+- [Longitudinal implementation plan](docs/superpowers/plans/2026-09-08-longitudinal-client-intelligence.md)
+- [Production & security operating notes](docs/production-security.md)
+
+These documents capture invariants, trust boundaries, failure behavior, human-control requirements, and implementation sequencing.
+
+---
+
+## Run locally
 
 ### Backend
 
-From the repository root, install backend dependencies into the existing project virtual environment:
+From the repository root:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-```
-
-Start the FastAPI development server:
-
-```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
 ```
 
-Run the backend tests:
+Backend development server:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\backend -v
+```text
+http://127.0.0.1:8000
 ```
 
 ### Frontend
 
-From the `frontend` directory, install dependencies and start Vite:
-
 ```powershell
+cd frontend
 npm install
 npm run dev
 ```
 
-Run the frontend quality checks:
+The Vite development server uses:
+
+```text
+http://localhost:3000
+```
+
+and proxies `/api` traffic to the local FastAPI backend.
+
+The complete authenticated workflow requires local OIDC/Auth0 configuration. Credentials and `.env` contents are intentionally excluded from the repository.
+
+### Tests / quality checks
 
 ```powershell
-npm run lint
-npm exec -- tsc -p tsconfig.app.json --noEmit
+.\.venv\Scripts\python.exe -m pytest tests\backend -q
+cd frontend
 npm test
+npm exec -- tsc -p tsconfig.app.json --noEmit
 npm run build
 ```
 
-## Security
+---
 
-Create local configuration by copying the example file:
+## Current status
 
-```powershell
-Copy-Item .env.example .env
-```
+Client Intelligence OS is **not currently advertised as a live production SaaS**.
 
-The primary AI provider is Groq, using `openai/gpt-oss-20b` by default. That is an
-open-weight model ID served through Groq; this configuration does not call OpenAI's
-paid API. `GROQ_API_KEY` is required only for LLM inference. Deterministic mode works
-without a provider key, and auto mode can use deterministic fallback when enabled.
-Groq's current free-tier limits and availability may change.
+That is intentional.
 
-Never commit `.env` or any provider credential. Configure secrets only in your local
-or deployment environment.
+The current focus is to finish cross-stack hardening and release-readiness before presenting the product as publicly deployed. The architecture and code are being developed toward a Premium V1 that can support deeper client briefs, evaluation/quality measurement, outcome intelligence, controlled agentic workflows, broader team/client surfaces, and production observability without weakening evidence provenance or human control.
 
-## Repository structure
+---
 
-```text
-backend/       FastAPI application, schemas, and analysis services
-frontend/      React and TypeScript application
-tests/         Backend test suite
-prototype-v0/  Earlier application prototype
-```
-## Production database operating requirement
+## Design philosophy
 
-Before production accepts real client data, its PostgreSQL service must provide
-either managed automated backups with a tested restore capability or scheduled,
-encrypted off-site logical PostgreSQL backups with a documented restore test.
-The application does not provide or verify this backup capability.
+ClientOS is an experiment in building AI products where **system engineering matters at least as much as the model call**.
 
-Run schema changes once before starting application workers:
+The project favors:
 
-```powershell
-.\.venv\Scripts\python.exe -m backend.app.db.migrate
-```
+- provenance over opaque answers;
+- structured contracts over unconstrained model text;
+- server authority over model authority;
+- deterministic facts over unnecessary inference;
+- explicit human approval over silent automation;
+- tenant isolation and concurrency correctness;
+- fail-safe degradation over fabricated certainty;
+- inspectable engineering decisions over demo-only behavior.
 
-Production application startup performs read-only database, Alembic revision,
-and tenant-ownership preflights. It does not run migrations automatically.
+---
 
-## Public perimeter deployment contract
+## Maintainer
 
-The application is designed for same-origin browser access behind a trusted TLS
-termination proxy:
+**Saurav Kumar Jha**
 
-```text
-public HTTPS -> trusted platform/reverse proxy -> FastAPI
-```
+Applied AI · Backend Engineering · AI Product Development
 
-Production configuration must use explicit `TRUSTED_HOSTS`, an HTTPS
-`APP_ORIGIN`, and an HTTPS `AUTH_CALLBACK_URL`. The API rejects request bodies
-larger than `MAX_API_REQUEST_BODY_BYTES` (128 KiB by default), and analysis
-input also has transcript and field-level validation limits.
-
-The API does not parse raw forwarded headers. If Uvicorn proxy headers are
-enabled in a future production command, `--forwarded-allow-ips` must contain
-only verified proxy IP or network values from `TRUSTED_PROXY_IPS`; never use
-`--forwarded-allow-ips="*"` as a generic setting. Public HTTP-to-HTTPS
-redirects and HSTS belong at the TLS edge, not in FastAPI.
-
-Production disables FastAPI docs, ReDoc, and OpenAPI endpoints. The API adds
-defense-in-depth response headers, but it does not serve the built React HTML.
-The frontend delivery edge must test and enforce this CSP against the built
-application before launch:
-
-```text
-default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none';
-form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
-connect-src 'self'; font-src 'self'
-```
-
-`/api/v1/health` is dependency-free liveness. `/api/v1/health/ready` verifies
-database reachability and should be restricted to platform/internal probes
-where the deployment edge supports that policy.
-
-## Controlled inference admission contract
-
-The application has six independently bounded process-local authentication,
-workspace, and analysis rate pools (login, callback, read, mutation, analysis
-attempt, and analysis daily quota), plus inference admission. `RATE_LIMITER_MAX_KEYS`
-is the maximum tracked keys **per policy pool**, so one policy cannot consume
-another policy's limiter capacity. They are valid only with **one Uvicorn
-worker and one application instance**. Production uses:
-
-```powershell
-.\.venv\Scripts\python.exe -m backend.app.run_production
-```
-
-The runner explicitly uses one worker, disables reload, and enables proxy
-headers only for explicit `TRUSTED_PROXY_IPS` values. It never uses a wildcard.
-Before using more than one worker or app replica, replace these controls with
-shared rate buckets and distributed inference leases (for example Redis).
-Application controls do not replace edge-level volumetric/DDoS protections;
-final deployment must verify exactly one running app replica.
+[GitHub](https://github.com/sauravoole-ai) · [LinkedIn](https://www.linkedin.com/in/saurav-kumarjha)
